@@ -153,7 +153,7 @@
             <!-- 预览模式 -->
             <pre v-else class="ai-result-item__content selectable">{{ result.content }}</pre>
             <div class="ai-result-item__meta">
-              {{ result.position }} | order {{ result.insertion_order }} | {{ result.content.length }} 字符
+              {{ result.position }} | order {{ result.insertion_order }} | {{ (result.content || '').length }} 字符
             </div>
           </div>
         </div>
@@ -749,6 +749,8 @@ ${baseInstruction}`;
         const newItems = parsed.map(item => ({
           ...item,
           selected: true,
+          comment: item.comment || '未命名条目',
+          content: item.content || '',
           keys: item.keys || [],
           constant: item.constant ?? false,
           position: item.position || 'before_char',
@@ -792,7 +794,7 @@ async function regenNovelResult(index) {
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('AI 返回格式异常');
     const parsed = JSON.parse(match[0]);
-    novelResults.value[index] = { ...parsed, selected: true, keys: parsed.keys || old.keys, constant: parsed.constant ?? old.constant, position: parsed.position || 'before_char', insertion_order: parsed.insertion_order || 100 };
+    novelResults.value[index] = { ...parsed, selected: true, comment: parsed.comment || old.comment || '未命名条目', content: parsed.content ?? old.content ?? '', keys: parsed.keys || old.keys, constant: parsed.constant ?? old.constant, position: parsed.position || 'before_char', insertion_order: parsed.insertion_order || 100 };
     appStore.toastSuccess(`「${parsed.comment || old.comment}」已重新生成`);
   } catch (e) {
     appStore.toastError('重新生成失败: ' + e.message);
@@ -827,6 +829,8 @@ ${novelExtra.value ? '【额外要求】\n' + novelExtra.value + '\n' : ''}
 
     const newItems = parsed.map(item => ({
       ...item, selected: true,
+      comment: item.comment || '未命名条目',
+      content: item.content || '',
       keys: item.keys || [], constant: item.constant ?? false,
       position: item.position || 'before_char', insertion_order: item.insertion_order || 100
     }));
@@ -973,6 +977,8 @@ ${aiWorldDesc.value}
           const newItems = parsed.map(item => ({
             ...item,
             selected: true,
+            comment: item.comment || '未命名条目',
+            content: item.content || '',
             keys: item.keys || [],
             constant: item.constant ?? false,
             position: item.position || 'before_char',
@@ -1029,6 +1035,8 @@ ${cardContext}
     aiResults.value[index] = {
       ...parsed,
       selected: true,
+      comment: parsed.comment || old.comment || '未命名条目',
+      content: parsed.content ?? old.content ?? '',
       keys: parsed.keys || old.keys,
       constant: parsed.constant ?? old.constant,
       position: parsed.position || old.position,
@@ -1064,6 +1072,8 @@ ${aiWorldDesc.value}
       { role: 'user', content: prompt }
     ], { temperature: 0.7, maxTokens: apiStore.getModelMaxTokens(apiStore.activeProvider?.model) })).map(item => ({
       ...item, selected: true,
+      comment: item.comment || '未命名条目',
+      content: item.content || '',
       keys: item.keys || [], constant: item.constant ?? false,
       position: item.position || 'before_char', insertion_order: item.insertion_order || 100
     }));
