@@ -26,7 +26,7 @@
         <div class="sidebar__logo">
           <div class="sidebar__logo-text" style="font-size:15px">
             角色卡锻造炉
-            <span class="sub">v5.0</span>
+            <span class="sub">{{ appVersion }}</span>
           </div>
         </div>
 
@@ -255,6 +255,9 @@ const niangStore = useAiNiangStore();
 // 错误日志弹窗
 const showErrorLog = ref(false);
 
+// 应用版本号（从 package.json 动态读取，避免硬编码）
+const appVersion = ref('');
+
 // 检查更新
 const checkingUpdate = ref(false);
 async function checkUpdate() {
@@ -447,5 +450,9 @@ onMounted(async () => {
   await apiStore.loadFromDisk();
   await loadDrawerHistoryFromDisk();
   window.addEventListener('beforeunload', () => { saveDrawerToHistory(); });
+  try {
+    const v = await window.cardForgeAPI?.getAppVersion?.();
+    if (v) appVersion.value = 'v' + v;
+  } catch (e) { /* 网页版或 preload 异常时静默 */ }
 });
 </script>
