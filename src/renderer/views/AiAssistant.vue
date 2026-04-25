@@ -235,6 +235,10 @@ function saveCurrentToHistory() {
   saveChatHistory();
 }
 
+function handleBeforeUnload() {
+  saveCurrentToHistory();
+}
+
 function startNewChat() {
   saveCurrentToHistory();
   messages.value = [];
@@ -265,22 +269,22 @@ const sharedCanvas = ref(null);
 const modelPos = reactive({ x: 20, y: 300 });
 
 // 当前显示的角色
-const activeNiang = computed(() => niangStore.getNiangById(mode.value));
+const activeNiang = computed(() => niangStore.getNiangById(mode.value) || { name: 'AI', color: '#9896a8', greeting: '你好！' });
 
-let dragging = null;
+let dragging = ref(null);
 let dragOffset = { x: 0, y: 0 };
 
 function startDrag(e, which) {
-  dragging = which;
+  dragging.value = which;
   dragOffset.x = e.clientX - modelPos.x;
   dragOffset.y = e.clientY - modelPos.y;
 }
 function onMouseMove(e) {
-  if (!dragging) return;
+  if (!dragging.value) return;
   modelPos.x = e.clientX - dragOffset.x;
   modelPos.y = e.clientY - dragOffset.y;
 }
-function onMouseUp() { dragging = null; }
+function onMouseUp() { dragging.value = null; }
 
 async function selectCustomModel(which) {
   const file = await window.cardForgeAPI.openFile({
@@ -312,12 +316,22 @@ onMounted(async () => {
   await initBothModels();
 
   // 关闭窗口时自动保存当前对话
-  window.addEventListener('beforeunload', () => { saveCurrentToHistory(); });
+  window.addEventListener('beforeunload', handleBeforeUnload);
 });
 
 onUnmounted(() => {
   document.removeEventListener('mousemove', onMouseMove);
   document.removeEventListener('mouseup', onMouseUp);
+  window.removeEventListener('beforeunload', handleBeforeUnload);
+  // Destroy Live2D model and PIXI app
+  if (currentModel) {
+    try { live2dApp?.stage.removeChild(currentModel); currentModel.destroy(); } catch {}
+    currentModel = null;
+  }
+  if (live2dApp) {
+    try { live2dApp.destroy(true); } catch {}
+    live2dApp = null;
+  }
 });
 
 // ======== 模型加载 ========
@@ -602,7 +616,9 @@ async function sendSingle(text, niang) {
 }
 
 async function sendDuo(text) {
-  const sysPrompt = niangStore.buildChatPrompt(niangStore.white, niangStore.black);
+  const white = niangStore.getNiangById('white') || { name: '白', color: '#9896a8' };
+  const black = niangStore.getNiangById('black') || { name: '黑', color: '#666' };
+  const sysPrompt = niangStore.buildChatPrompt(white, black);
   const history = messages.value.slice(-10);
   const chatMsgs = [
     { role: 'system', content: sysPrompt },
@@ -611,22 +627,22 @@ async function sendDuo(text) {
   const result = await apiStore.chat(chatMsgs, { temperature: 0.9, maxTokens: apiStore.getModelMaxTokens(apiStore.activeProvider?.model) });
 
   const lines = result.split('\n').filter(l => l.trim());
-  const wName = niangStore.white.name;
-  const bName = niangStore.black.name;
+  const wName = white.name;
+  const bName = black.name;
   let hasNamed = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith(wName + '：') || trimmed.startsWith(wName + ':')) {
-      messages.value.push({ id: ++msgId, role: 'assistant', niangId: 'white', name: wName, content: trimmed.replace(new RegExp(`^${wName}[：:]\\s*`), ''), color: niangStore.white.color });
+      messages.value.push({ id: ++msgId, role: 'assistant', niangId: 'white', name: wName, content: trimmed.replace(new RegExp(`^${wName}[：:]\\s*`), ''), color: white.color });
       hasNamed = true;
     } else if (trimmed.startsWith(bName + '：') || trimmed.startsWith(bName + ':')) {
-      messages.value.push({ id: ++msgId, role: 'assistant', niangId: 'black', name: bName, content: trimmed.replace(new RegExp(`^${bName}[：:]\\s*`), ''), color: niangStore.black.color });
+      messages.value.push({ id: ++msgId, role: 'assistant', niangId: 'black', name: bName, content: trimmed.replace(new RegExp(`^${bName}[：:]\\s*`), ''), color: black.color });
       hasNamed = true;
     }
   }
   if (!hasNamed) {
-    messages.value.push({ id: ++msgId, role: 'assistant', niangId: 'white', name: wName + ' & ' + bName, content: result, color: niangStore.white.color });
+    messages.value.push({ id: ++msgId, role: 'assistant', niangId: 'white', name: wName + ' & ' + bName, content: result, color: white.color });
   }
 }
 </script>

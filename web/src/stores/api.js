@@ -146,15 +146,25 @@ export const useApiStore = defineStore('api', () => {
   }
 
   async function callClaude(provider, messages, temperature, maxTokens) {
-    // Extract system message
     const systemMsg = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
+
+    // Merge consecutive same-role messages for Claude API
+    const merged = [];
+    for (const m of userMessages) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === m.role) {
+        last.content += '\n' + m.content;
+      } else {
+        merged.push({ role: m.role, content: m.content });
+      }
+    }
 
     const body = {
       model: provider.model,
       max_tokens: maxTokens,
       temperature,
-      messages: userMessages.map(m => ({ role: m.role, content: m.content }))
+      messages: merged
     };
     if (systemMsg) body.system = systemMsg.content;
 
@@ -184,7 +194,6 @@ export const useApiStore = defineStore('api', () => {
   }
 
   async function callGemini(provider, messages, temperature, maxTokens) {
-    // Convert messages to Gemini format
     const contents = [];
     let systemInstruction = null;
 
@@ -199,8 +208,19 @@ export const useApiStore = defineStore('api', () => {
       }
     }
 
+    // Merge consecutive same-role messages for Gemini
+    const merged = [];
+    for (const c of contents) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === c.role) {
+        last.parts[0].text += '\n' + c.parts[0].text;
+      } else {
+        merged.push({ role: c.role, parts: [{ text: c.parts[0].text }] });
+      }
+    }
+
     const body = {
-      contents,
+      contents: merged,
       generationConfig: {
         temperature,
         maxOutputTokens: maxTokens
@@ -235,6 +255,12 @@ export const useApiStore = defineStore('api', () => {
     return text;
   }
 
+  function warnStreamParseIssues(providerName, warningCount) {
+    if (warningCount > 0) {
+      console.warn(`[API Stream] ${providerName} stream ignored ${warningCount} malformed fragment(s).`);
+    }
+  }
+
   async function streamOpenAI(provider, messages, temperature, maxTokens, onChunk) {
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -246,6 +272,7 @@ export const useApiStore = defineStore('api', () => {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', fullText = '';
+    let parseWarningCount = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -255,16 +282,26 @@ export const useApiStore = defineStore('api', () => {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
         if (data === '[DONE]') continue;
-        try { const json = JSON.parse(data); const chunk = json.choices?.[0]?.delta?.content; if (chunk) { fullText += chunk; onChunk(chunk); } } catch {}
+        try { const json = JSON.parse(data); const chunk = json.choices?.[0]?.delta?.content; if (chunk) { fullText += chunk; onChunk(chunk); } } catch (e) { parseWarningCount++; }
       }
     }
+    warnStreamParseIssues('OpenAI', parseWarningCount);
     return fullText;
   }
 
   async function streamClaude(provider, messages, temperature, maxTokens, onChunk) {
     const systemMsg = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
-    const body = { model: provider.model, max_tokens: maxTokens, temperature, stream: true, messages: userMessages.map(m => ({ role: m.role, content: m.content })) };
+    const merged = [];
+    for (const m of userMessages) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === m.role) {
+        last.content += '\n' + m.content;
+      } else {
+        merged.push({ role: m.role, content: m.content });
+      }
+    }
+    const body = { model: provider.model, max_tokens: maxTokens, temperature, stream: true, messages: merged };
     if (systemMsg) body.system = systemMsg.content;
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/v1/messages`, {
@@ -276,6 +313,7 @@ export const useApiStore = defineStore('api', () => {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', fullText = '';
+    let parseWarningCount = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -283,9 +321,10 @@ export const useApiStore = defineStore('api', () => {
       const lines = buffer.split('\n'); buffer = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
-        try { const json = JSON.parse(line.slice(6)); if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta') { const chunk = json.delta.text; if (chunk) { fullText += chunk; onChunk(chunk); } } } catch {}
+        try { const json = JSON.parse(line.slice(6)); if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta') { const chunk = json.delta.text; if (chunk) { fullText += chunk; onChunk(chunk); } } } catch (e) { parseWarningCount++; }
       }
     }
+    warnStreamParseIssues('Claude', parseWarningCount);
     return fullText;
   }
 
@@ -296,7 +335,16 @@ export const useApiStore = defineStore('api', () => {
       if (msg.role === 'system') { systemInstruction = msg.content; }
       else { contents.push({ role: msg.role === 'assistant' ? 'model' : 'user', parts: [{ text: msg.content }] }); }
     }
-    const body = { contents, generationConfig: { temperature, maxOutputTokens: maxTokens } };
+    const merged = [];
+    for (const c of contents) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === c.role) {
+        last.parts[0].text += '\n' + c.parts[0].text;
+      } else {
+        merged.push({ role: c.role, parts: [{ text: c.parts[0].text }] });
+      }
+    }
+    const body = { contents: merged, generationConfig: { temperature, maxOutputTokens: maxTokens } };
     if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/v1beta/models/${provider.model}:streamGenerateContent`, {
@@ -308,14 +356,23 @@ export const useApiStore = defineStore('api', () => {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '', fullText = '';
+    let parseWarningCount = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const matches = buffer.matchAll(/"text":\s*"((?:[^"\\]|\\.)*)"/g);
+      const matches = [...buffer.matchAll(/"text":\s*"((?:[^"\\]|\\.)*)"/g)];
       for (const m of matches) { const chunk = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\'); fullText += chunk; onChunk(chunk); }
-      const lastBrace = buffer.lastIndexOf('}'); if (lastBrace !== -1) buffer = buffer.slice(lastBrace + 1);
+      const lastBrace = buffer.lastIndexOf('}');
+      if (lastBrace !== -1) {
+        const completed = buffer.slice(0, lastBrace + 1);
+        if (matches.length === 0 && completed.includes('"text"')) {
+          parseWarningCount++;
+        }
+        buffer = buffer.slice(lastBrace + 1);
+      }
     }
+    warnStreamParseIssues('Gemini', parseWarningCount);
     return fullText;
   }
 
@@ -408,7 +465,9 @@ export const useApiStore = defineStore('api', () => {
         const data = await resp.json();
         return (data.data || []).map(m => m.id).sort();
       } else if (provider.type === 'gemini') {
-        const resp = await fetch(`${baseUrl}/v1beta/models?key=${provider.apiKey}`);
+        const resp = await fetch(`${baseUrl}/v1beta/models`, {
+          headers: { 'x-goog-api-key': provider.apiKey }
+        });
         if (!resp.ok) return [];
         const data = await resp.json();
         return (data.models || []).map(m => m.name.replace('models/', '')).sort();

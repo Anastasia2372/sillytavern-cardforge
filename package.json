@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "build:renderer": "vite build",
+    "build:web": "vite build --config web/vite.config.js",
+    "build:all": "npm run build:renderer && npm run build:web",
     "electron:dev": "node scripts/dev.js",
     "dist": "npm run build:renderer && electron-builder"
   },
@@ -44,7 +46,8 @@
       "installerIcon": "public/icon.ico",
       "uninstallerIcon": "public/icon.ico",
       "shortcutName": "CardForge",
-      "artifactName": "CardForge-Setup.exe"
+      "artifactName": "CardForge-Setup.exe",
+      "include": "build/uninstaller.nsh"
     },
     "publish": [
       {
