@@ -148,15 +148,25 @@ export const useApiStore = defineStore('api', () => {
   }
 
   async function callClaude(provider, messages, temperature, maxTokens) {
-    // Extract system message
     const systemMsg = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
+
+    // Merge consecutive same-role messages for Claude API
+    const merged = [];
+    for (const m of userMessages) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === m.role) {
+        last.content += '\n' + m.content;
+      } else {
+        merged.push({ role: m.role, content: m.content });
+      }
+    }
 
     const body = {
       model: provider.model,
       max_tokens: maxTokens,
       temperature,
-      messages: userMessages.map(m => ({ role: m.role, content: m.content }))
+      messages: merged
     };
     if (systemMsg) body.system = systemMsg.content;
 
@@ -186,7 +196,6 @@ export const useApiStore = defineStore('api', () => {
   }
 
   async function callGemini(provider, messages, temperature, maxTokens) {
-    // Convert messages to Gemini format
     const contents = [];
     let systemInstruction = null;
 
@@ -201,8 +210,19 @@ export const useApiStore = defineStore('api', () => {
       }
     }
 
+    // Merge consecutive same-role messages for Gemini
+    const merged = [];
+    for (const c of contents) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === c.role) {
+        last.parts[0].text += '\n' + c.parts[0].text;
+      } else {
+        merged.push({ role: c.role, parts: [{ text: c.parts[0].text }] });
+      }
+    }
+
     const body = {
-      contents,
+      contents: merged,
       generationConfig: {
         temperature,
         maxOutputTokens: maxTokens
@@ -237,6 +257,12 @@ export const useApiStore = defineStore('api', () => {
     return text;
   }
 
+  function warnStreamParseIssues(providerName, warningCount) {
+    if (warningCount > 0) {
+      console.warn(`[API Stream] ${providerName} stream ignored ${warningCount} malformed fragment(s).`);
+    }
+  }
+
   async function streamOpenAI(provider, messages, temperature, maxTokens, onChunk) {
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -255,6 +281,7 @@ export const useApiStore = defineStore('api', () => {
     const decoder = new TextDecoder();
     let buffer = '';
     let fullText = '';
+    let parseWarningCount = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -269,18 +296,30 @@ export const useApiStore = defineStore('api', () => {
           const json = JSON.parse(data);
           const chunk = json.choices?.[0]?.delta?.content;
           if (chunk) { fullText += chunk; onChunk(chunk); }
-        } catch {}
+        } catch (e) {
+          parseWarningCount++;
+        }
       }
     }
+    warnStreamParseIssues('OpenAI', parseWarningCount);
     return fullText;
   }
 
   async function streamClaude(provider, messages, temperature, maxTokens, onChunk) {
     const systemMsg = messages.find(m => m.role === 'system');
     const userMessages = messages.filter(m => m.role !== 'system');
+    const merged = [];
+    for (const m of userMessages) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === m.role) {
+        last.content += '\n' + m.content;
+      } else {
+        merged.push({ role: m.role, content: m.content });
+      }
+    }
     const body = {
       model: provider.model, max_tokens: maxTokens, temperature, stream: true,
-      messages: userMessages.map(m => ({ role: m.role, content: m.content }))
+      messages: merged
     };
     if (systemMsg) body.system = systemMsg.content;
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
@@ -302,6 +341,7 @@ export const useApiStore = defineStore('api', () => {
     const decoder = new TextDecoder();
     let buffer = '';
     let fullText = '';
+    let parseWarningCount = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -316,9 +356,12 @@ export const useApiStore = defineStore('api', () => {
             const chunk = json.delta.text;
             if (chunk) { fullText += chunk; onChunk(chunk); }
           }
-        } catch {}
+        } catch (e) {
+          parseWarningCount++;
+        }
       }
     }
+    warnStreamParseIssues('Claude', parseWarningCount);
     return fullText;
   }
 
@@ -329,7 +372,16 @@ export const useApiStore = defineStore('api', () => {
       if (msg.role === 'system') { systemInstruction = msg.content; }
       else { contents.push({ role: msg.role === 'assistant' ? 'model' : 'user', parts: [{ text: msg.content }] }); }
     }
-    const body = { contents, generationConfig: { temperature, maxOutputTokens: maxTokens } };
+    const merged = [];
+    for (const c of contents) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === c.role) {
+        last.parts[0].text += '\n' + c.parts[0].text;
+      } else {
+        merged.push({ role: c.role, parts: [{ text: c.parts[0].text }] });
+      }
+    }
+    const body = { contents: merged, generationConfig: { temperature, maxOutputTokens: maxTokens } };
     if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const url = `${baseUrl}/v1beta/models/${provider.model}:streamGenerateContent`;
@@ -346,12 +398,13 @@ export const useApiStore = defineStore('api', () => {
     const decoder = new TextDecoder();
     let buffer = '';
     let fullText = '';
+    let parseWarningCount = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       // Gemini 流式返回 JSON 数组片段，逐块提取 text
-      const matches = buffer.matchAll(/"text":\s*"((?:[^"\\]|\\.)*)"/g);
+      const matches = [...buffer.matchAll(/"text":\s*"((?:[^"\\]|\\.)*)"/g)];
       for (const m of matches) {
         const chunk = m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
         fullText += chunk;
@@ -359,8 +412,15 @@ export const useApiStore = defineStore('api', () => {
       }
       // 已处理的部分不需要保留，只保留可能不完整的最后几个字符
       const lastBrace = buffer.lastIndexOf('}');
-      if (lastBrace !== -1) buffer = buffer.slice(lastBrace + 1);
+      if (lastBrace !== -1) {
+        const completed = buffer.slice(0, lastBrace + 1);
+        if (matches.length === 0 && completed.includes('"text"')) {
+          parseWarningCount++;
+        }
+        buffer = buffer.slice(lastBrace + 1);
+      }
     }
+    warnStreamParseIssues('Gemini', parseWarningCount);
     return fullText;
   }
 
@@ -456,7 +516,9 @@ export const useApiStore = defineStore('api', () => {
         const data = await resp.json();
         return (data.data || []).map(m => m.id).sort();
       } else if (provider.type === 'gemini') {
-        const resp = await fetch(`${baseUrl}/v1beta/models?key=${provider.apiKey}`);
+        const resp = await fetch(`${baseUrl}/v1beta/models`, {
+          headers: { 'x-goog-api-key': provider.apiKey }
+        });
         if (!resp.ok) return [];
         const data = await resp.json();
         return (data.models || []).map(m => m.name.replace('models/', '')).sort();
