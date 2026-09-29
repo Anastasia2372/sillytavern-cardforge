@@ -11,7 +11,11 @@
     <div v-else class="ft-panel" :style="panelStyle">
       <div class="ft-panel__header" @mousedown.prevent="onBallMouseDown">
         <span class="ft-panel__title">工具集</span>
-        <button class="ft-panel__close" @click.stop="expanded = false">×</button>
+        <div class="ft-panel__actions" @mousedown.stop>
+          <button class="ft-panel__close" @click.stop="toolSettings.settingsOpen = true"
+            title="悬浮窗设置" aria-label="悬浮窗设置">⚙</button>
+          <button class="ft-panel__close" @click.stop="expanded = false" aria-label="收起工具集">×</button>
+        </div>
       </div>
 
       <div class="ft-panel__tabs">
@@ -20,7 +24,8 @@
           @click="switchTool(t.key)">{{ t.short }}</button>
       </div>
 
-      <div class="ft-panel__body">
+      <div class="ft-panel__body" :class="{ 'ft-panel__body--chat': activeTool === 'chat' }">
+        <InspirationChat v-if="activeTool === 'chat'" />
         <!-- 写开场白 -->
         <div v-if="activeTool === 'greeting'">
           <div class="hint mb-sm">基于当前卡的 description / personality / scenario，让 AI 写个新开场白</div>
@@ -56,21 +61,24 @@
           <div class="hint mb-sm">从下拉选一条世界书条目，AI 按方向重写</div>
           <div class="form-group">
             <label>条目</label>
-            <input class="input mb-sm" v-model="entrySearch" placeholder="搜 标题 / 关键词 / 正文 / #id">
+            <input class="input mb-sm" v-model="entrySearch" placeholder="搜 标题 / 关键词 / 正文 / #序号">
             <select class="select" v-model="entrySelectedId">
               <option value="">— 选择条目（{{ filteredEntries.length }} / {{ worldEntries.length }}）—</option>
               <option v-for="e in filteredEntries" :key="e.id" :value="e.id">
-                #{{ e.id }} {{ e.comment || '(未命名)' }}
+                序号 {{ e.extensions?.cfSortKey ?? '—' }} · {{ e.comment || '(未命名)' }}
               </option>
             </select>
+            <div class="hint">序号和排列与世界书列表一致；输入 #2 可查找序号 2。</div>
           </div>
           <div class="form-group">
             <label>优化方向</label>
             <input class="input" v-model="entryDirection" placeholder="如：去除万能美人描写 / 加感官细节 / 缩短 30%">
           </div>
-          <button class="btn btn--primary btn--sm" :disabled="loading || !entrySelectedId" @click="runOptimizeEntry">
+          <button class="btn btn--primary btn--sm" :disabled="loading || entrySelectedId === ''" @click="runOptimizeEntry">
             {{ loading ? '改写中...' : '改写' }}
           </button>
+          <button class="btn btn--secondary btn--sm" :disabled="entrySelectedId === ''"
+            @click="router.push({ path: '/agent', query: { entry: String(entrySelectedId), direction: entryDirection } }); expanded = false">审阅式改写</button>
           <div v-if="aiResult" class="ft-result">
             <div class="ft-result__head">
               <span>改写结果</span>
@@ -170,10 +178,14 @@ import { useCardStore } from '../stores/card.js';
 import { useApiStore } from '../stores/api.js';
 import { useAppStore } from '../stores/app.js';
 import { buildCardContext } from '../utils/card-context.js';
+import { sortedWorldSections, groupWorldEntries } from '../utils/world-sections.js';
+import InspirationChat from './InspirationChat.vue';
+import { useFloatingToolsStore, FLOATING_TOOLS } from '../stores/floating-tools.js';
 
 const cardStore = useCardStore();
 const apiStore = useApiStore();
 const appStore = useAppStore();
+const toolSettings = useFloatingToolsStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -241,30 +253,26 @@ const panelStyle = computed(() => {
   return { left: left - pos.x + 'px', top: top - pos.y + 'px' };
 });
 
-// 工具元数据
-const ALL_TOOLS = [
-  { key: 'greeting', short: '开场白' },
-  { key: 'optimize_entry', short: '改条目', onlyRoute: '/worldbook' },
-  { key: 'npc_name', short: '起NPC名' },
-  { key: 'explain_code', short: '解释码' },
-  { key: 'enrich_desc', short: '补 desc' },
-  { key: 'quick_diag', short: '去诊断', isJump: true }
-];
-
-const availableTools = computed(() => ALL_TOOLS.filter(t => {
+const availableTools = computed(() => toolSettings.enabledTools.filter(t => {
   if (t.onlyRoute && route.path !== t.onlyRoute) return false;
   return true;
 }));
 
-const activeTool = ref('greeting');
-watch(availableTools, (tools) => {
-  if (!tools.find(t => t.key === activeTool.value)) {
-    activeTool.value = tools[0]?.key || 'greeting';
+function defaultTool(tools) {
+  if (route.path === '/agent' && tools.some(tool => tool.key === 'optimize_entry')) return 'optimize_entry';
+  return tools.find(tool => !tool.isJump)?.key || 'chat';
+}
+const activeTool = ref(defaultTool(availableTools.value));
+watch([availableTools, () => route.path], ([tools, path], [, previousPath]) => {
+  if (path === '/agent' && previousPath !== '/agent' && tools.some(tool => tool.key === 'optimize_entry')) {
+    activeTool.value = 'optimize_entry';
+  } else if (!tools.find(t => t.key === activeTool.value)) {
+    activeTool.value = defaultTool(tools);
   }
 });
 
 function switchTool(key) {
-  const tool = ALL_TOOLS.find(t => t.key === key);
+  const tool = FLOATING_TOOLS.find(t => t.key === key);
   if (tool?.isJump) {
     router.push('/diagnostic');
     expanded.value = false;
@@ -301,7 +309,7 @@ function copyResult() {
 
 // 拼角色卡上下文，传 matchText 启用绿灯关键词匹配
 function cardCtx(matchText = '') {
-  return buildCardContext(cardStore, matchText);
+  return buildCardContext(cardStore, matchText, toolSettings.contextLimits);
 }
 
 // ========== 工具1：写开场白 ==========
@@ -341,11 +349,20 @@ function applyGreeting() {
 const entrySelectedId = ref('');
 const entryDirection = ref('');
 const entrySearch = ref('');
+// watch 注册时会立即读取筛选结果，先初始化其依赖。
+const worldEntries = computed(() => {
+  const entries = (cardStore.worldEntries || []).slice().sort((a, b) =>
+    (a.extensions?.cfSortKey ?? 0) - (b.extensions?.cfSortKey ?? 0));
+  const sections = sortedWorldSections(cardStore.cardData.character_book);
+  return groupWorldEntries(entries, sections).flatMap(group => group.entries);
+});
 const filteredEntries = computed(() => {
   const q = entrySearch.value.trim().toLowerCase();
   if (!q) return worldEntries.value;
+  const sequence = q.match(/^#(\d+)$/);
+  if (sequence) return worldEntries.value.filter(e => e.extensions?.cfSortKey === Number(sequence[1]));
   return worldEntries.value.filter(e => {
-    if (String(e.id).includes(q)) return true;
+    if (String(e.extensions?.cfSortKey ?? '').includes(q)) return true;
     if ((e.comment || '').toLowerCase().includes(q)) return true;
     if ((e.content || '').toLowerCase().includes(q)) return true;
     const keys = Array.isArray(e.keys) ? e.keys : [];
@@ -355,12 +372,10 @@ const filteredEntries = computed(() => {
 });
 // 搜索过滤后，如果当前选中的 id 不在结果里，自动清掉避免下拉显示空白却 id 还在
 watch(filteredEntries, (list) => {
-  if (entrySelectedId.value && !list.some(e => e.id === entrySelectedId.value)) {
+  if (entrySelectedId.value !== '' && !list.some(e => e.id === entrySelectedId.value)) {
     entrySelectedId.value = '';
   }
 });
-
-const worldEntries = computed(() => cardStore.worldEntries || []);
 
 async function runOptimizeEntry() {
   loading.value = true;
@@ -368,7 +383,8 @@ async function runOptimizeEntry() {
   try {
     const entry = worldEntries.value.find(e => e.id === entrySelectedId.value);
     if (!entry) throw new Error('未找到该条目');
-    const sys = '你是 SillyTavern 世界书条目改写专家。按"绝对零度+白描+特征差异化"原则改写，禁八股语言。保持原条目的核心信息和长度框架。';
+    const strictWording = cardStore.cardData.extensions?.cfStrictWording || '';
+    const sys = `你是 SillyTavern 世界书条目改写专家。按"绝对零度+白描+特征差异化"原则改写，禁八股语言。保持原条目的核心信息和长度框架。${strictWording ? '严格遵守用户提供的严格用词设定。' : ''}`;
     const matchText = `${(entry.keys || []).join(' ')} ${entryDirection.value || ''}`;
     const usr = `请改写以下世界书条目：
 
@@ -380,7 +396,7 @@ ${entry.content || ''}
 【改写方向】
 ${entryDirection.value || '提升写作质量，去除套路化描写'}
 
-——以下是角色卡其他背景设定，改写时保持风格和世界观自洽——
+——以下是角色卡其他背景设定（其中包含创作约定和严格用词设定），改写时保持风格和世界观自洽——
 ${cardCtx(matchText)}
 
 直接输出改写后的完整内容，不要前缀、不要解释。`;
@@ -393,7 +409,7 @@ ${cardCtx(matchText)}
 }
 
 function applyEntryRewrite() {
-  if (!aiResult.value || !entrySelectedId.value) return;
+  if (!aiResult.value || entrySelectedId.value === '') return;
   const entry = worldEntries.value.find(e => e.id === entrySelectedId.value);
   if (!entry) {
     appStore.toastError('条目不存在了');
@@ -546,6 +562,7 @@ function applyEnrichedDesc() {
 }
 .ft-panel__header:active { cursor: grabbing; }
 .ft-panel__title { font-size: 13px; font-weight: 600; }
+.ft-panel__actions { display: flex; align-items: center; gap: 6px; }
 .ft-panel__close {
   background: transparent; border: none;
   color: var(--cf-text-muted); cursor: pointer;
@@ -581,9 +598,12 @@ function applyEnrichedDesc() {
 
 .ft-panel__body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
 }
+.ft-panel__body--chat { overflow: hidden; }
+.ft-panel__body input, .ft-panel__body textarea { user-select: text; -webkit-user-select: text; }
 .ft-panel__body .form-group { margin-bottom: 8px; }
 .ft-panel__body label { font-size: 11px; color: var(--cf-text-muted); display: block; margin-bottom: 3px; }
 .ft-panel__body .input,

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch, onScopeDispose } from 'vue';
+import { restoreWorldSections, exportWorldSections } from '../utils/world-sections.js';
 
 // Default empty card structure (V2 spec)
 function createEmptyCard() {
@@ -124,6 +125,153 @@ export const useCardStore = defineStore('card', () => {
   const coverImageBase64 = ref(null);
   const isDirty = ref(false);
   const lastSaved = ref(null);
+  const autosaveState = ref('loading');
+  const autosaveError = ref('');
+  const autosaveWarning = ref('');
+  const autosaveSeconds = ref(0);
+  const lastAutosaved = ref(null);
+  const autosaveInterval = ref(10);
+  try {
+    const interval = Number(localStorage.getItem('cf_autosave_interval'));
+    if (Number.isInteger(interval) && interval >= 5 && interval <= 600) autosaveInterval.value = interval;
+  } catch {}
+  const draftSession = crypto.randomUUID();
+  let draftId = crypto.randomUUID();
+  let draftRevision = 0;
+  let savedRevision = 0;
+  let autosaveReady = false;
+  let restoringDraft = false;
+  let autosaveTimer = null;
+  let saving = null;
+  let initialization = null;
+
+  function stopCountdown() {
+    clearInterval(autosaveTimer);
+    autosaveTimer = null;
+    autosaveSeconds.value = 0;
+  }
+
+  function scheduleAutosave() {
+    if (!autosaveReady || autosaveTimer || saving) return;
+    const deadline = Date.now() + autosaveInterval.value * 1000;
+    autosaveSeconds.value = autosaveInterval.value;
+    if (!autosaveError.value) autosaveState.value = 'pending';
+    autosaveTimer = setInterval(() => {
+      autosaveSeconds.value = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (!autosaveSeconds.value) {
+        stopCountdown();
+        saveDraftNow();
+      }
+    }, 250);
+  }
+
+  function makeSnapshot() {
+    return JSON.parse(JSON.stringify({ version: 1, id: draftId, session: draftSession,
+      revision: draftRevision, card: card.value, filePath: filePath.value,
+      coverImagePath: coverImagePath.value, coverImageBase64: coverImageBase64.value,
+      isDirty: isDirty.value }));
+  }
+
+  function setAutosaveInterval(seconds) {
+    if (!Number.isInteger(seconds) || seconds < 5 || seconds > 600) throw new Error('请输入 5～600 之间的整数秒数');
+    localStorage.setItem('cf_autosave_interval', String(seconds));
+    autosaveInterval.value = seconds;
+    stopCountdown();
+    if (draftRevision !== savedRevision || autosaveError.value) scheduleAutosave();
+  }
+
+  function saved(result, revision, id) {
+    if (id !== draftId || revision < savedRevision) return;
+    if (!result?.success) throw new Error(result?.error || '自动保存未成功');
+    savedRevision = revision;
+    lastAutosaved.value = result.savedAt;
+    autosaveError.value = '';
+    autosaveWarning.value = '';
+    autosaveState.value = draftRevision === savedRevision ? 'saved' : 'pending';
+  }
+
+  function failed(error) {
+    autosaveState.value = 'error';
+    autosaveError.value = error.message || String(error);
+  }
+
+  async function saveDraftNow() {
+    if (!autosaveReady) return;
+    if (saving) return saving;
+    stopCountdown();
+    autosaveState.value = 'saving';
+    const revision = draftRevision;
+    const id = draftId;
+    saving = (async () => {
+      try {
+        const result = await window.cardForgeAPI.saveCardDraft(makeSnapshot());
+        saved(result, revision, id);
+      } catch (error) { if (id === draftId && revision >= savedRevision) failed(error); }
+    })();
+    await saving;
+    saving = null;
+    if (draftRevision !== savedRevision || autosaveError.value) scheduleAutosave();
+  }
+
+  function flushDraft() {
+    if (!autosaveReady || (draftRevision === savedRevision && !autosaveError.value)) return true;
+    stopCountdown();
+    try {
+      saved(window.cardForgeAPI.saveCardDraftSync(makeSnapshot()), draftRevision, draftId);
+      return true;
+    } catch (error) {
+      failed(error);
+      scheduleAutosave();
+      return false;
+    }
+  }
+
+  function preserveCurrentDraft() {
+    if (!restoringDraft && !flushDraft()) throw new Error('当前草稿保存失败，请点击标题栏重试后再切换角色卡');
+  }
+
+  function initializeAutosave() {
+    if (initialization) return initialization;
+    initialization = (async () => {
+      try {
+        const result = await window.cardForgeAPI.loadCardDraft();
+        if (!result?.success) throw new Error(result?.error || '草稿读取失败');
+        if (result.draft) {
+          const draft = result.draft;
+          restoringDraft = true;
+          loadFromJson(draft.card);
+          draftId = draft.id;
+          filePath.value = draft.filePath || null;
+          coverImagePath.value = draft.coverImagePath || null;
+          coverImageBase64.value = draft.coverImageBase64 || null;
+          isDirty.value = draft.isDirty !== false;
+          lastAutosaved.value = draft.savedAt || null;
+          autosaveWarning.value = result.warning || '';
+          autosaveState.value = 'saved';
+        } else autosaveState.value = 'idle';
+      } catch (error) { failed(error); }
+      finally { restoringDraft = false; autosaveReady = true; }
+    })();
+    return initialization;
+  }
+
+  watch([card, filePath, coverImagePath, coverImageBase64, isDirty], () => {
+    if (!autosaveReady || restoringDraft) return;
+    draftRevision++;
+    scheduleAutosave();
+  }, { deep: true, flush: 'sync' });
+
+  function onBeforeUnload(event) {
+    if (!flushDraft()) {
+      event.preventDefault();
+      event.returnValue = false;
+    }
+  }
+  window.addEventListener('beforeunload', onBeforeUnload);
+  onScopeDispose(() => {
+    stopCountdown();
+    window.removeEventListener('beforeunload', onBeforeUnload);
+  });
 
   // Getters
   const cardData = computed(() => card.value.data);
@@ -173,6 +321,9 @@ export const useCardStore = defineStore('card', () => {
 
   // Actions
   function newCard() {
+    preserveCurrentDraft();
+    draftId = crypto.randomUUID();
+    lastAutosaved.value = null;
     card.value = createEmptyCard();
     filePath.value = null;
     coverImagePath.value = null;
@@ -181,6 +332,11 @@ export const useCardStore = defineStore('card', () => {
   }
 
   function loadFromJson(json) {
+    preserveCurrentDraft();
+    if (!restoringDraft) {
+      draftId = crypto.randomUUID();
+      lastAutosaved.value = null;
+    }
     // Handle both top-level and data-nested formats
     if (json.data) {
       card.value = json;
@@ -202,6 +358,8 @@ export const useCardStore = defineStore('card', () => {
     if (!card.value.data.character_book) {
       card.value.data.character_book = { name: '', entries: [] };
     }
+
+    restoreWorldSections(card.value.data.character_book);
 
     // 给所有条目补充 cfSortKey（CardForge 内部显示排序，独立于 insertion_order 和 ST 的 display_index）
     const entries = card.value.data.character_book.entries || [];
@@ -264,7 +422,9 @@ export const useCardStore = defineStore('card', () => {
       create_date: new Date().toISOString()
     };
     // 深度克隆为纯对象，去掉 Vue reactive proxy（避免 IPC structured clone 失败）
-    return JSON.parse(JSON.stringify(obj));
+    const exported = JSON.parse(JSON.stringify(obj));
+    exportWorldSections(exported.data.character_book, createEmptyWorldEntry);
+    return exported;
   }
 
   function markDirty() {
@@ -368,6 +528,9 @@ export const useCardStore = defineStore('card', () => {
 
   return {
     card, filePath, coverImagePath, coverImageBase64, isDirty, lastSaved,
+    autosaveState, autosaveError, autosaveWarning, autosaveSeconds, lastAutosaved,
+    initializeAutosave, saveDraftNow,
+    autosaveInterval, setAutosaveInterval,
     cardData, worldEntries, regexScripts, tavernScripts, cardName, stats,
     newCard, loadFromJson, exportJson, markDirty,
     addWorldEntry, removeWorldEntry, duplicateWorldEntry,

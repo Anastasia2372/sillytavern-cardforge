@@ -1,15 +1,34 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
+
+// 在初始化会话和自动保存前抢占单实例锁，避免多个进程共用缓存和草稿。
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  return;
+}
+
 const path = require('path');
 const fs = require('fs');
 const logger = require('./logger');
 const { autoUpdater } = require('electron-updater');
+const { registerAutosave } = require('./autosave');
+const { registerBackground } = require('./background');
 
 const isDev = process.env.NODE_ENV === 'development';
 
 // 主进程全局错误捕获 — 必须在 app.whenReady 之前注册
 logger.installGlobalHandlers();
+registerAutosave();
 
 let mainWindow;
+registerBackground(() => mainWindow);
+
+app.on('second-instance', () => {
+  // 首个窗口尚未创建时，继续由正常启动流程打开。
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
 
 // ============ 自动更新 ============
 autoUpdater.autoDownload = false;          // 让用户先确认再下载
@@ -111,6 +130,24 @@ function createWindow() {
     mainWindow.show();
   });
 
+  // 无边框窗口也提供原生文本编辑菜单，支持聊天文字复制及输入框粘贴。
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const items = [];
+    if (params.isEditable) {
+      items.push({ role: 'undo', label: '撤销', enabled: params.editFlags.canUndo },
+        { role: 'redo', label: '重做', enabled: params.editFlags.canRedo }, { type: 'separator' },
+        { role: 'cut', label: '剪切', enabled: params.editFlags.canCut });
+    }
+    if (params.isEditable || params.selectionText) {
+      items.push({ role: 'copy', label: '复制', enabled: params.editFlags.canCopy });
+    }
+    if (params.isEditable) {
+      items.push({ role: 'paste', label: '粘贴', enabled: params.editFlags.canPaste },
+        { type: 'separator' }, { role: 'selectAll', label: '全选' });
+    }
+    if (items.length) Menu.buildFromTemplate(items).popup({ window: mainWindow });
+  });
+
   // F12 打开 DevTools — 仅开发环境
   if (isDev) {
     mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -140,6 +177,28 @@ app.on('activate', () => {
 });
 
 // ============ IPC Handlers ============
+
+// SillyTavern Link：通过酒馆自己的 HTTP API 读写数据。
+const { requestTavernApi } = require('./tavern-link');
+
+ipcMain.handle('tavern:status', async () => ({
+  installPath: 'E:\\SillyTavern',
+  installExists: fs.existsSync('E:\\SillyTavern'),
+  defaultUrl: 'http://127.0.0.1:8000'
+}));
+
+ipcMain.handle('tavern:request', async (_event, options = {}) => {
+  try {
+    return await requestTavernApi(options.baseUrl, options.endpoint, options.body);
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('clipboard:writeText', (_event, text) => {
+  if (typeof text !== 'string') throw new TypeError('只能复制文本');
+  clipboard.writeText(text);
+});
 
 // Window controls
 ipcMain.on('window:minimize', () => mainWindow?.minimize());

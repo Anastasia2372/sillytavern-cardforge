@@ -78,14 +78,14 @@ export const useAiNiangStore = defineStore('ainiang', () => {
 
   // 用 utils/card-context.js 的统一 helper 拼上下文
   // currentMessage 传当前用户消息，绿灯条目按主 keys 命中才塞
-  function buildSystemPrompt(niang, cardStore, currentMessage = '') {
+  function buildSystemPrompt(niang, cardStore, currentMessage = '', contextLimits) {
     const n = niang || youxi.value;
     const hasCard = cardStore && cardStore.cardData
       && (cardStore.cardData.name || cardStore.cardData.description
         || cardStore.cardData.personality || cardStore.cardData.first_mes
         || (cardStore.worldEntries && cardStore.worldEntries.length > 0));
     const cardBlock = hasCard
-      ? `\n\n——以下是用户正在编辑的角色卡，聊天时可以参考；不要主动复述，用户问到再展开——\n${buildCardContext(cardStore, currentMessage)}`
+      ? `\n\n——以下是用户正在编辑的角色卡，聊天时可以参考；不要主动复述，用户问到再展开——\n${buildCardContext(cardStore, currentMessage, contextLimits)}`
       : '\n\n（用户当前还没填角色卡内容。）';
     return `你叫"${n.name}"，是用户的写作搭子。
 个性：${n.personality}

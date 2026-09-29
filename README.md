@@ -58,6 +58,14 @@ CardForge 是一款专为 SillyTavern 用户设计的桌面级角色卡制作工
 
 ## 安装与运行（从源码编译，仅开发者）
 
+### Windows 双击启动（无需打包安装包）
+
+安装 **Node.js 22.12+ 或 24+ LTS** 后，双击仓库根目录的 **`启动.bat`** 即可运行桌面应用。首次运行会自动执行 `npm install --include=dev --no-audit --no-fund` 安装依赖并同步依赖锁文件，需要联网；之后每次启动会构建前端并直接运行 Electron，无需执行 electron-builder。
+
+启动器请保留在仓库根目录。运行期间保留命令行窗口，正常关闭应用后窗口会自动退出；如果安装、构建或运行失败，窗口会保留报错信息。更新代码导致依赖变化时，请先执行 `npm install --include=dev` 更新依赖。
+
+需要热更新开发时，可执行 `npm run electron:dev`；`npm run dev` 仅启动前端开发服务器。
+
 > **免责声明 — 本节仅面向会写代码的开发者**
 >
 > 打开这一节就默认你**会用命令行、看得懂报错、能自己解决依赖问题**。如果你不会代码却非要照这里折腾，出了任何问题（装不上、跑不起来、白屏、依赖冲突、路径错误、git/npm 报错……）一概不负责，也不会回复求助。
@@ -66,7 +74,7 @@ CardForge 是一款专为 SillyTavern 用户设计的桌面级角色卡制作工
 
 ### 前置要求
 
-- **Node.js** 16 或以上版本 — [下载地址](https://nodejs.org/)
+- **Node.js** 22.12+ 或 24+ LTS（当前 Vite 8 所需的现代 Node.js 版本）— [下载地址](https://nodejs.org/)
   - 安装时勾选"Add to PATH"
   - 安装完成后打开终端输入 `node -v` 确认能看到版本号
 - **Git** — [下载地址](https://git-scm.com/)
@@ -131,7 +139,7 @@ npx electron-builder --win --x64 --dir
 ### 常见问题
 
 **Q: npm install 报错**
-A: 检查 Node.js 版本是否 >= 16，试试用管理员权限运行终端。
+A: 检查 Node.js 是否为 22.12+ 或 24+ LTS，并根据报错检查网络连接。
 
 **Q: 打包时报错**
 A: 确保 `npm run build` 先执行成功再跑 electron-builder。

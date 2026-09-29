@@ -5,7 +5,7 @@
         <h1>AI 助手</h1>
       </div>
       <div class="flex-row">
-        <button class="btn btn--accent btn--sm" @click="startNewChat">开始新对话</button>
+        <button class="btn btn--accent btn--sm" @click="startNewChat" :disabled="loading">开始新对话</button>
         <button class="btn btn--secondary btn--sm" @click="showHistory = !showHistory; showConfig = false; showModelConfig = false; settingsOpen = false">
           对话记录 ({{ chatHistory.length }})
         </button>
@@ -123,6 +123,7 @@
             <div class="chat-msg__content">
               <div class="chat-msg__name" :style="{ color: activeNiang.color }">{{ activeNiang.name }}</div>
               <div class="chat-msg__text">{{ activeNiang.greeting }}</div>
+              <button class="btn btn--ghost btn--sm" @click="copyMessage(activeNiang.greeting)">复制</button>
             </div>
           </div>
         </div>
@@ -132,6 +133,7 @@
           <div class="chat-msg__content">
             <div class="chat-msg__name" :style="{ color: msg.color || '#9896a8' }">{{ msg.name }}</div>
             <div class="chat-msg__text selectable" v-html="formatMsg(msg.content)"></div>
+            <button class="btn btn--ghost btn--sm" @click="copyMessage(msg.content)">复制</button>
           </div>
         </div>
 
@@ -144,8 +146,8 @@
 
       <div class="chat-input">
         <textarea class="textarea" v-model="inputText" rows="2"
-          placeholder="输入消息... (Enter 发送)"
-          @keydown.enter.exact.prevent="send" :disabled="loading"></textarea>
+          placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
+          @keydown.enter.exact="onSendKey"></textarea>
         <button class="btn btn--primary" @click="send" :disabled="loading || !inputText.trim()">发送</button>
       </div>
     </div>
@@ -163,20 +165,18 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue';
-import { useCardStore } from '../stores/card.js';
-import { useApiStore } from '../stores/api.js';
+import { ref, reactive, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
+import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/app.js';
 import { useAiNiangStore } from '../stores/ainiang.js';
+import { useAssistantChatStore } from '../stores/assistant-chat.js';
+import { copyText } from '../utils/clipboard.js';
 
-const cardStore = useCardStore();
-const apiStore = useApiStore();
 const appStore = useAppStore();
 const niangStore = useAiNiangStore();
+const chatStore = useAssistantChatStore();
 
-const messages = ref([]);
-const inputText = ref('');
-const loading = ref(false);
+const { messages, inputText, loading } = storeToRefs(chatStore);
 const messagesRef = ref(null);
 const showConfig = ref(false);
 const showModelConfig = ref(false);
@@ -185,7 +185,6 @@ const settingsOpen = ref(false);
 const showKey = ref(false);
 const live2dVisible = ref(localStorage.getItem('cf_live2d_visible') === '1');
 let live2dInited = false;
-let msgId = 0;
 
 const activeNiang = computed(() => niangStore.youxi);
 
@@ -240,18 +239,19 @@ function saveCurrentToHistory() {
 }
 
 function startNewChat() {
+  if (loading.value) return;
   saveCurrentToHistory();
   messages.value = [];
   appStore.toastSuccess('已开始新对话');
 }
 
 function loadHistory(index) {
+  if (loading.value) return;
   const h = chatHistory.value[index];
   if (!h) return;
   // 先保存当前对话
   saveCurrentToHistory();
   messages.value = h.messages.map(m => ({ ...m }));
-  msgId = Math.max(0, ...messages.value.map(m => m.id || 0)) + 1;
   showHistory.value = false;
   appStore.toastSuccess('已加载历史对话');
   nextTick(() => { if (messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight; });
@@ -301,7 +301,7 @@ async function selectCustomModel() {
 }
 
 onMounted(async () => {
-  await niangStore.loadConfig();
+  await chatStore.initialize();
   await loadChatHistory();
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('mouseup', onMouseUp);
@@ -316,10 +316,12 @@ onMounted(async () => {
   }
 
   // 关闭窗口时自动保存当前对话
-  window.addEventListener('beforeunload', () => { saveCurrentToHistory(); });
+  window.addEventListener('beforeunload', saveCurrentToHistory);
+  scrollBottom();
 });
 
 onUnmounted(() => {
+  window.removeEventListener('beforeunload', saveCurrentToHistory);
   document.removeEventListener('mousemove', onMouseMove);
   document.removeEventListener('mouseup', onMouseUp);
 });
@@ -425,49 +427,19 @@ async function scrollBottom() {
   if (messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
 }
 
-async function send() {
-  const text = inputText.value.trim();
-  if (!text || loading.value) return;
-  if (!apiStore.isConfigured) { appStore.toastError('请先配置 API Key'); return; }
+watch(() => [messages.value.length, loading.value], scrollBottom);
 
-  messages.value.push({ id: ++msgId, role: 'user', name: '你', content: text, color: '#f59e42' });
-  inputText.value = '';
-  loading.value = true;
-  await scrollBottom();
+function send() { return chatStore.send(); }
 
-  try {
-    await sendSingle(text, activeNiang.value);
-  } catch (e) {
-    messages.value.push({ id: ++msgId, role: 'assistant', name: '系统', content: `出错了：${e.message}`, color: '#f87171' });
-  } finally {
-    loading.value = false;
-    await scrollBottom();
-  }
+function onSendKey(event) {
+  if (event.isComposing) return;
+  event.preventDefault();
+  send();
 }
 
-async function sendSingle(text, niang) {
-  const sysPrompt = niangStore.buildSystemPrompt(niang, cardStore, text);
-  const history = messages.value.filter(m => m.role === 'user' || m.niangId === niang.id).slice(-10);
-  const chatMsgs = [
-    { role: 'system', content: sysPrompt },
-    ...history.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }))
-  ];
-  // 如果角色有自己的 API 设置就用自己的，否则走全局
-  let result;
-  if (niang.apiKey && niang.apiBaseUrl && niang.apiModel) {
-    const tempProvider = {
-      id: niang.id + '_custom',
-      type: niang.apiType || 'openai',
-      baseUrl: niang.apiBaseUrl,
-      apiKey: niang.apiKey,
-      model: niang.apiModel,
-      enabled: true
-    };
-    result = await apiStore.chatWithProvider(tempProvider, chatMsgs, { temperature: 0.85, maxTokens: apiStore.getModelMaxTokens(tempProvider.model) });
-  } else {
-    result = await apiStore.chat(chatMsgs, { temperature: 0.85, maxTokens: apiStore.getModelMaxTokens(apiStore.activeProvider?.model) });
-  }
-  messages.value.push({ id: ++msgId, role: 'assistant', niangId: niang.id, name: niang.name, content: result, color: niang.color });
+async function copyMessage(content) {
+  try { await copyText(content); appStore.toastSuccess('已复制'); }
+  catch { appStore.toastError('复制失败，请选中文字后重试'); }
 }
 
 </script>
@@ -494,11 +466,13 @@ async function sendSingle(text, niang) {
 .chat-msg--user .chat-msg__text { display: inline-block; text-align: left; }
 .chat-msg__name { font-size: 11px; margin-bottom: 3px; font-weight: 500; }
 .chat-msg__text {
+  user-select: text; -webkit-user-select: text; cursor: text;
   font-size: 13px; line-height: 1.7;
   background: rgba(0, 0, 0, 0.15);
   padding: 8px 14px; border-radius: 10px;
   display: inline-block; max-width: 80%; word-wrap: break-word;
 }
+.chat-msg__text :deep(*) { user-select: text; -webkit-user-select: text; }
 .chat-msg--user .chat-msg__text { background: rgba(245, 158, 66, 0.12); }
 .chat-msg__text code {
   background: rgba(0, 229, 255, 0.1); color: #00e5ff;
@@ -513,7 +487,7 @@ async function sendSingle(text, niang) {
   border-top: 1px solid var(--cf-border);
   display: flex; gap: 8px; align-items: flex-end;
 }
-.chat-input .textarea { flex: 1; min-height: unset; resize: none; }
+.chat-input .textarea { flex: 1; min-height: unset; resize: none; user-select: text; -webkit-user-select: text; }
 
 /* ── 对话记录 ── */
 .history-item {

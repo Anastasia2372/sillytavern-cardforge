@@ -73,6 +73,9 @@
     "url": "https://github.com/Anastasia2372/sillytavern-cardforge/issues"
   },
   "type": "commonjs",
+  "allowScripts": {
+    "electron": true
+  },
   "dependencies": {
     "electron-updater": "^6.8.3",
     "png-chunk-text": "^1.0.0",

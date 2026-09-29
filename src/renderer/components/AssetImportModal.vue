@@ -221,11 +221,11 @@ async function pickFile() {
     if (!filePath) { loading.value = false; return; }
 
     let json;
-    if (filePath.endsWith('.json')) {
+    if (filePath.toLowerCase().endsWith('.json')) {
       const r = await window.cardForgeAPI.readTextFile(filePath);
       if (!r.success) throw new Error(r.error);
       json = JSON.parse(r.data);
-    } else if (filePath.endsWith('.png')) {
+    } else if (filePath.toLowerCase().endsWith('.png')) {
       const r = await window.cardForgeAPI.extractCharaData(filePath);
       if (!r.success) throw new Error(r.error);
       json = r.data;

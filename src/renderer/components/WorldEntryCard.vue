@@ -43,6 +43,7 @@
         </span>
       </div>
       <div class="flex-row" @click.stop>
+        <span class="wb-entry__meta">酒馆顺序 {{ entry.insertion_order }}</span>
         <span class="wb-entry__meta">{{ entry.position }}</span>
         <button v-if="mode === 'persisted'" class="btn btn--ghost btn--sm" @click="$emit('duplicate')">复制</button>
         <button class="btn btn--danger btn--sm" @click="handleDelete">{{ mode === 'preview' ? '移除' : '删除' }}</button>
@@ -94,9 +95,9 @@
           <div class="hint" v-else>角色定义前/后是最常用的。深度插入（@D）越靠近底部效力越强。</div>
         </div>
         <div class="form-group">
-          <label>插入顺序 (insertion_order)</label>
-          <input class="input" type="number" v-model.number="entry.insertion_order" @input="markDirty">
-          <div class="hint">数值越大越靠下。推荐：系统规则1-10，NPC 50-80，输出格式9990+</div>
+          <label>酒馆顺序 (insertion_order)</label>
+          <input class="input" type="number" :value="entry.insertion_order" @change="changeInsertionOrder">
+          <div class="hint">允许重复。修改后自动归入顺序范围匹配的分隔栏；与头部的工具显示序号相互独立。</div>
         </div>
         <div class="form-group">
           <label>扫描深度 (depth)</label>
@@ -233,7 +234,7 @@ const props = defineProps({
 });
 
 const emit = defineEmits([
-  'toggle-expand', 'toggle-select', 'delete', 'duplicate', 'update-order',
+  'toggle-expand', 'toggle-select', 'delete', 'duplicate', 'update-order', 'update-insertion-order',
   'drag-start', 'drag-over', 'drag-leave', 'drop', 'drag-end'
 ]);
 
@@ -245,6 +246,19 @@ function markDirty() {
   if (props.mode === 'persisted') {
     store.markDirty();
   }
+}
+
+function changeInsertionOrder(event) {
+  const raw = event.target.value;
+  const value = Number(raw);
+  if (raw === '' || !Number.isSafeInteger(value)) {
+    event.target.value = props.entry.insertion_order;
+    appStore.toastWarning('酒馆顺序必须是有效整数');
+    return;
+  }
+  props.entry.insertion_order = value;
+  markDirty();
+  emit('update-insertion-order', value);
 }
 
 function syncPosition() {
@@ -285,6 +299,7 @@ function handleDelete() {
 
 .wb-entry__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
@@ -292,6 +307,8 @@ function handleDelete() {
   gap: 8px;
 }
 .wb-entry__header:hover { background: var(--cf-bg-hover); }
+.wb-entry__header > .flex-row { min-width: 0; flex-wrap: wrap; }
+.wb-entry__name, .wb-entry__keys { overflow-wrap: anywhere; }
 
 .wb-drag-handle {
   cursor: grab;

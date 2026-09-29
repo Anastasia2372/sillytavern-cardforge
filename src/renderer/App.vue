@@ -1,17 +1,15 @@
 <template>
   <div class="app-root">
-    <!-- 壁纸层 -->
-    <div class="wallpaper-layer" :style="wallpaperStyle"></div>
-    <!-- 蓝色星空滤镜层 -->
-    <div class="starfilter-layer"></div>
+    <BackgroundLayers />
     <!-- 星空粒子 -->
-    <div class="starfield">
+    <div v-if="appearance.options.particles" class="starfield">
       <div v-for="star in stars" :key="star.id" class="starfield__star" :style="star.style"></div>
     </div>
 
     <!-- 自定义标题栏 -->
     <div class="titlebar">
       <div class="titlebar__title">角色卡锻造炉</div>
+      <AutosaveStatus />
       <div class="titlebar__controls">
         <button class="titlebar__btn" @click="api.minimize()">─</button>
         <button class="titlebar__btn" @click="api.maximize()">☐</button>
@@ -103,6 +101,9 @@
             <router-link to="/package" class="sidebar__item" active-class="active">
               <span class="sidebar__item-icon">·</span> 打包角色卡
             </router-link>
+            <router-link to="/tavern-link" class="sidebar__item" active-class="active">
+              <span class="sidebar__item-icon">·</span> 酒馆 Link
+            </router-link>
           </div>
 
           <div class="sidebar__section">
@@ -116,6 +117,9 @@
             <router-link to="/assistant" class="sidebar__item" active-class="active">
               <span class="sidebar__item-icon">·</span> AI 助手
             </router-link>
+            <router-link to="/agent" class="sidebar__item" active-class="active">
+              <span class="sidebar__item-icon">·</span> 创作 Agent
+            </router-link>
             <router-link to="/statistics" class="sidebar__item" active-class="active">
               <span class="sidebar__item-icon">·</span> 卡片统计
             </router-link>
@@ -123,16 +127,13 @@
 
           <div class="sidebar__section">
             <div class="sidebar__section-title">设置</div>
+            <router-link to="/settings" class="sidebar__item" active-class="active">
+              <span class="sidebar__item-icon">·</span> 总设置
+            </router-link>
             <router-link to="/api" class="sidebar__item" active-class="active">
               <span class="sidebar__item-icon">·</span> API 设置
               <span class="badge badge--success" v-if="apiStore.isConfigured">OK</span>
             </router-link>
-            <div class="sidebar__item" style="cursor:pointer" @click="appStore.toggleGlow()">
-              <span class="sidebar__item-icon">·</span> 流光边框
-              <span class="badge" :class="appStore.glowEnabled ? 'badge--success' : 'badge--warning'">
-                {{ appStore.glowEnabled ? '开' : '关' }}
-              </span>
-            </div>
             <div class="sidebar__item" style="cursor:pointer" @click="showErrorLog = true">
               <span class="sidebar__item-icon">·</span> 错误日志
             </div>
@@ -182,8 +183,9 @@
       </div>
     </div>
 
-    <!-- 全局浮动工具集（AI 助手 / 诊断页隐藏） -->
-    <FloatingTools v-if="$route.path !== '/assistant' && $route.path !== '/diagnostic'" />
+    <!-- 创作 Agent 页面保留悬浮工具；AI 助手和诊断页面隐藏。 -->
+    <FloatingTools v-if="!['/assistant', '/diagnostic'].includes($route.path)" v-show="floatingTools.visible" />
+    <FloatingToolsSettings />
 
     <!-- Toast 通知 -->
     <div class="toast-container">
@@ -203,14 +205,20 @@ import { onMounted, ref } from 'vue';
 import { useCardStore } from './stores/card.js';
 import { useApiStore } from './stores/api.js';
 import { useAppStore } from './stores/app.js';
-import wallpaperDataUrl from './wallpaper-data.js';
+import BackgroundLayers from './components/BackgroundLayers.vue';
+import { useAppearanceStore } from './stores/appearance.js';
 import ErrorLogModal from './components/ErrorLogModal.vue';
 import FloatingTools from './components/FloatingTools.vue';
+import AutosaveStatus from './components/AutosaveStatus.vue';
+import FloatingToolsSettings from './components/FloatingToolsSettings.vue';
+import { useFloatingToolsStore } from './stores/floating-tools.js';
 
 const api = window.cardForgeAPI;
 const cardStore = useCardStore();
 const apiStore = useApiStore();
 const appStore = useAppStore();
+const appearance = useAppearanceStore();
+const floatingTools = useFloatingToolsStore();
 
 // 错误日志弹窗
 const appVersion = ref('');
@@ -240,9 +248,6 @@ async function checkUpdate() {
   }
 }
 
-// 壁纸 - 内嵌 base64
-const wallpaperStyle = ref({ backgroundImage: `url(${wallpaperDataUrl})` });
-
 // 星空粒子 — 下落式
 function makeStars(count) {
   const arr = [];
@@ -267,6 +272,7 @@ function makeStars(count) {
 const stars = ref(makeStars(60));
 
 onMounted(async () => {
+  appearance.initialize();
   await appStore.loadTheme();
   await apiStore.loadFromDisk();
   try { appVersion.value = 'v' + await api.getAppVersion(); } catch {}

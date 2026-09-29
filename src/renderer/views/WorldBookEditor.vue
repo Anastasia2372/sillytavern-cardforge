@@ -1,12 +1,13 @@
 <template>
-  <div class="page">
+  <div class="page worldbook-page">
     <div class="page__header flex-between">
       <div>
         <h1>世界书编辑器</h1>
         <p>管理角色卡的世界书条目 — 当前 {{ entries.length }} 条</p>
         <input class="input" v-model="bookName" placeholder="世界书名（默认为「未命名」）" style="max-width:320px;margin-top:4px"/>
       </div>
-      <div class="flex-row">
+      <div class="flex-row worldbook-actions">
+        <router-link to="/agent" class="btn btn--secondary btn--sm">创作 Agent</router-link>
         <button class="btn btn--secondary btn--sm" @click="showAiPanel = !showAiPanel; showRefNovelPanel = false">
           {{ showAiPanel ? '关闭AI生成' : 'AI 生成条目' }}
         </button>
@@ -20,7 +21,9 @@
         <button class="btn btn--ghost" @click="toggleBatchMode" v-if="entries.length > 0">
           {{ batchMode ? '退出批量' : '批量操作' }}
         </button>
-        <button class="btn btn--primary" @click="handleAdd">+ 新建条目</button>
+        <button class="btn btn--secondary" :disabled="!entries.length && !sections.length" @click="autoSortWorldBook" title="按工具内的分隔栏及条目顺序，重排全书酒馆顺序">自动排序</button>
+        <button class="btn wb-section-button" @click="addSection">+ 添加分隔栏</button>
+        <button class="btn btn--primary" @click="handleAdd()">+ 新建条目</button>
       </div>
     </div>
 
@@ -244,6 +247,7 @@
 
           <!-- AI 改写面板 -->
           <div v-if="showAiRewrite && wbSelectedIds.size > 0" class="mt-md">
+            <p v-if="store.cardData.extensions?.cfStrictWording" class="hint mb-sm">已启用创作 Agent 的严格用词设定，批量改写和重新生成都会优先遵守。</p>
             <div class="form-group">
               <label>改写要求</label>
               <input class="input" v-model="aiRewriteReq" placeholder="如：更详细、改成YAML格式、补充NPC细节、精简到200字以内...">
@@ -292,9 +296,10 @@
       <span class="badge badge--info">{{ entries.filter(e => !e.constant && e.enabled).length }} 触发</span>
       <span class="badge badge--danger">{{ entries.filter(e => !e.enabled).length }} 禁用</span>
     </div>
+    <p v-if="sections.length" class="wb-grouping-hint">拖动分隔栏标题可整体移动，自动同步各栏范围和栏内条目的酒馆顺序。自动排序以工具内顺序为准，每栏至少预留 1000 个顺序。条目单独拖拽仅调整栏内显示顺序。{{ filterActive ? '筛选期间临时展开所有分隔栏；整栏移动和自动排序仍包含隐藏条目。' : '' }}</p>
 
     <!-- 条目列表 -->
-    <div v-if="filteredEntries.length === 0 && !showAiPanel" class="card">
+    <div v-if="filteredEntries.length === 0 && sections.length === 0 && !showAiPanel" class="card">
       <div class="empty-state">
         <div class="empty-state__icon"></div>
         <div class="empty-state__title">暂无世界书条目</div>
@@ -303,25 +308,63 @@
     </div>
 
     <div v-else>
-      <WorldEntryCard v-for="entry in filteredEntries" :key="entry.id + '_' + listVersion"
-        :entry="entry"
-        mode="persisted"
-        :expanded="expandedIds.has(entry.id)"
-        :batch-mode="batchMode"
-        :selected="wbSelectedIds.has(entry.id)"
-        :is-dragging-me="dragSourceId === entry.id"
-        :is-drag-over-me="dragOverId === entry.id"
-        @toggle-expand="toggleExpand(entry.id)"
-        @toggle-select="wbToggleSelect(entry.id)"
-        @delete="deleteEntry(entry.id)"
-        @duplicate="store.duplicateWorldEntry(entry.id)"
-        @update-order="val => updateOrder(entry, val)"
-        @drag-start="onDragStart($event, entry.id)"
-        @drag-over="onDragOver($event, entry.id)"
-        @drag-leave="onDragLeave(entry.id)"
-        @drop="onDrop($event, entry.id)"
-        @drag-end="onDragEnd" />
+      <section v-for="group in visibleGroups" :key="group.section?.id || 'ungrouped'"
+        :data-section-id="group.section?.id"
+        :class="{ 'wb-section': group.section, 'wb-section--dragging': sectionDragSourceId === group.section?.id, 'wb-section--drop-before': sectionDragOverId === group.section?.id && !sectionDropAfter, 'wb-section--drop-after': sectionDragOverId === group.section?.id && sectionDropAfter }">
+        <div v-if="group.section" class="wb-section__header"
+          @dragover.prevent="onSectionDragOver($event, group.section.id)"
+          @dragleave="onSectionDragLeave($event, group.section.id)"
+          @drop="onSectionDrop($event, group.section.id)">
+          <button class="wb-section__toggle" :aria-expanded="!group.section.collapsed || filterActive"
+            :aria-label="'展开或折叠' + group.section.name"
+            @click="toggleSection(group.section)">
+            <span>{{ !group.section.collapsed || filterActive ? '▼' : '▶' }}</span>
+            <span class="wb-section__drag-title" draggable="true" title="拖动标题移动整栏，点击展开或折叠"
+              @dragstart.stop="onSectionDragStart($event, group.section.id)"
+              @dragend="onSectionDragEnd">
+              <span aria-hidden="true">⠿</span><strong>{{ group.section.name }}</strong>
+            </span>
+            <span class="wb-section__count">{{ group.total }} 条</span>
+            <span v-if="filterActive" class="wb-section__count">匹配 {{ group.entries.length }} 条</span>
+            <span class="wb-section__range">条目酒馆顺序：{{ group.range }}</span>
+          </button>
+          <div class="wb-section__actions">
+            <span class="wb-section__bounds">范围 {{ group.section.startOrder }}—{{ group.section.endOrder }} · 工具序 {{ group.section.sortOrder }}</span>
+            <button class="btn btn--ghost btn--sm" @click="handleAdd(group.section)">+ 条目</button>
+            <button class="btn btn--ghost btn--sm" :disabled="sections[0]?.id === group.section.id" @click="moveSection(group.section, -1)" aria-label="分隔栏上移">↑</button>
+            <button class="btn btn--ghost btn--sm" :disabled="sections[sections.length - 1]?.id === group.section.id" @click="moveSection(group.section, 1)" aria-label="分隔栏下移">↓</button>
+            <button class="btn btn--ghost btn--sm" @click="editingSection = { ...group.section }">设置</button>
+            <button class="btn btn--danger btn--sm" @click="removeSection(group.section)">删除分隔栏</button>
+          </div>
+        </div>
+        <div v-else-if="sections.length" class="wb-ungrouped-title">未分组 · {{ group.entries.length }} 条</div>
+        <div v-if="!group.section || !group.section.collapsed || filterActive" :class="{ 'wb-section__body': group.section }">
+          <p v-if="!group.entries.length" class="wb-section__empty">{{ filterActive ? '本栏没有符合筛选的条目。' : '暂无条目。将条目的酒馆顺序设为本栏范围内的数值，即可自动归入。' }}</p>
+          <WorldEntryCard v-for="entry in group.entries" :key="entry.id + '_' + listVersion"
+            :entry="entry"
+            :data-entry-id="entry.id"
+            mode="persisted"
+            :expanded="expandedIds.has(entry.id)"
+            :batch-mode="batchMode"
+            :selected="wbSelectedIds.has(entry.id)"
+            :is-dragging-me="dragSourceId === entry.id"
+            :is-drag-over-me="dragOverId === entry.id"
+            @toggle-expand="toggleExpand(entry.id)"
+            @toggle-select="wbToggleSelect(entry.id)"
+            @delete="deleteEntry(entry.id)"
+            @duplicate="store.duplicateWorldEntry(entry.id)"
+            @update-order="val => updateOrder(entry, val)"
+            @update-insertion-order="revealEntrySection(entry)"
+            @drag-start="onDragStart($event, entry.id)"
+            @drag-over="onDragOver($event, entry.id)"
+            @drag-leave="onDragLeave(entry.id)"
+            @drop="onDrop($event, entry.id)"
+            @drag-end="onDragEnd" />
+        </div>
+      </section>
     </div>
+    <WorldSectionEditor v-if="editingSection" :section="editingSection" :sections="sections"
+      @close="editingSection = null" @save="saveSection" />
   </div>
 </template>
 
@@ -333,11 +376,64 @@ import { useAppStore } from '../stores/app.js';
 import { buildCardContext } from '../utils/card-context.js';
 import { chatForJsonArray, parseAiJsonArray } from '../utils/json-repair.js';
 import WorldEntryCard from '../components/WorldEntryCard.vue';
+import WorldSectionEditor from '../components/WorldSectionEditor.vue';
+import { sortedWorldSections, groupWorldEntries, reflowWorldBookSections, sectionForEntry } from '../utils/world-sections.js';
 
 const store = useCardStore();
 const apiStore = useApiStore();
 const appStore = useAppStore();
 const entries = computed(() => store.worldEntries);
+const sections = computed(() => sortedWorldSections(store.cardData.character_book));
+const editingSection = ref(null);
+
+function addSection() {
+  const end = sections.value.reduce((max, section) => Math.max(max, section.endOrder), 0);
+  const start = sections.value.length ? end + 1 : 1;
+  editingSection.value = { name: '新分隔栏', startOrder: start, endOrder: start + 99,
+    sortOrder: Math.max(0, ...sections.value.map(section => section.sortOrder)) + 1, collapsed: false };
+}
+
+function saveSection(section) {
+  const book = store.cardData.character_book;
+  book.extensions ||= {};
+  const all = sections.value.slice();
+  const index = all.findIndex(item => item.id === section.id);
+  if (index === -1) { section = { ...section, id: crypto.randomUUID() }; all.push(section); }
+  else all[index] = section;
+  book.extensions.cfSections = all;
+  editingSection.value = null;
+  store.markDirty();
+  nextTick(() => document.querySelector(`[data-section-id="${CSS.escape(section.id)}"]`)?.scrollIntoView({ block: 'nearest' }));
+}
+
+function toggleSection(section) {
+  section.collapsed = !section.collapsed;
+  store.markDirty();
+}
+
+function moveSection(section, direction) {
+  const all = sections.value.slice();
+  const index = all.findIndex(item => item.id === section.id);
+  const target = index + direction;
+  if (target < 0 || target >= all.length) return;
+  all.splice(index, 1);
+  all.splice(target, 0, section);
+  reflowWorldBookSections(store.cardData.character_book, all.map(item => item.id));
+  store.markDirty();
+}
+
+function removeSection(section) {
+  appStore.confirmAction(`删除分隔栏「${section.name}」？栏内条目会保留，并按剩余范围重新归类。`, () => {
+    store.cardData.character_book.extensions.cfSections = sections.value.filter(item => item.id !== section.id);
+    store.markDirty();
+  });
+}
+
+function revealEntrySection(entry) {
+  const section = sectionForEntry(entry, sections.value);
+  if (section?.collapsed) { section.collapsed = false; store.markDirty(); }
+  nextTick(() => document.querySelector(`[data-entry-id="${CSS.escape(String(entry.id))}"]`)?.scrollIntoView({ block: 'nearest' }));
+}
 
 // 把 AI 返回的世界书条目数组规范化：过滤空对象（comment/content 都没的丢掉）+ 补默认值
 // 修复 AI 截断或偷懒返回 [{}, {}, ...] 时塞一堆空白条目的 bug
@@ -412,6 +508,13 @@ function buildRefNovelSegment() {
   const novel = (store.cardData.extensions?.cfReferenceNovel || '').trim();
   if (!novel) return '';
   return `\n\n## 参考小说素材（按它的世界观、人物风格、笔法来生成 / 改写）\n\n${novel}`;
+}
+
+// 创作 Agent 中保存的严格用词设定，世界书的批量改写和单条重生成共用。
+function buildStrictWordingSegment() {
+  const wording = (store.cardData.extensions?.cfStrictWording || '').trim();
+  if (!wording) return '';
+  return `\n\n## 严格用词设定（优先遵守）\n${wording}`;
 }
 
 // AI 生成相关
@@ -743,11 +846,40 @@ function handleFilter() {
   showFilter.value = !showFilter.value;
 }
 
-function handleAdd() {
-  const entry = store.addWorldEntry();
+const filterActive = computed(() => !!(filterText.value || filterType.value || filterPosition.value));
+const visibleGroups = computed(() => {
+  const visible = new Set(filteredEntries.value.map(entry => entry.id));
+  const ordered = entries.value.slice().sort((a, b) => (a.extensions?.cfSortKey ?? 0) - (b.extensions?.cfSortKey ?? 0));
+  return groupWorldEntries(ordered, sections.value).map(group => {
+    const orders = group.entries.map(entry => Number(entry.insertion_order));
+    return { ...group, total: group.entries.length,
+      range: orders.length ? `${Math.min(...orders)}—${Math.max(...orders)}` : '暂无',
+      entries: group.entries.filter(entry => visible.has(entry.id)) };
+  }).filter(group => group.section || group.entries.length);
+});
+
+function handleAdd(section = null) {
+  const draft = store.createEmptyWorldEntry();
+  if (section) {
+    // 重叠区间由前面的栏优先接收；为栏内新建选择第一个实际可用的顺序。
+    let order = section.startOrder;
+    for (const earlier of sections.value.slice(0, sections.value.findIndex(item => item.id === section.id))
+      .sort((a, b) => a.startOrder - b.startOrder)) {
+      if (order >= earlier.startOrder && order <= earlier.endOrder) order = earlier.endOrder + 1;
+    }
+    if (order > section.endOrder) {
+      appStore.toastWarning('本栏范围完全被前面的分隔栏覆盖，请调整范围或工具内顺序后再添加');
+      return;
+    }
+    draft.insertion_order = order;
+  }
+  const entry = store.addWorldEntry(draft);
+  filterText.value = ''; filterType.value = ''; filterPosition.value = '';
+  revealEntrySection(entry);
   expandedIds.value.add(entry.id);
   nextTick(() => {
-    const el = document.querySelector(`.wb-entry:last-child .input, .wb-entry:last-child .textarea`);
+    const el = document.querySelector(`[data-entry-id="${entry.id}"] .input`);
+    el?.scrollIntoView({ block: 'nearest' });
     if (el) el.focus();
   });
 }
@@ -798,14 +930,69 @@ const dragSourceId = ref(null);
 const dragOverId = ref(null);
 const dragEnabledId = ref(null);  // 只有按下手柄的那条才允许拖
 
+const sectionDragSourceId = ref(null);
+const sectionDragOverId = ref(null);
+const sectionDropAfter = ref(false);
+
+function autoSortWorldBook() {
+  reflowWorldBookSections(store.cardData.character_book);
+  store.markDirty();
+  appStore.toastSuccess('已按工具内顺序更新全书分隔栏范围和条目酒馆顺序');
+}
+
+function onSectionDragStart(event, id) {
+  onDragEnd();
+  sectionDragSourceId.value = id;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('application/x-cardforge-section', id);
+  event.dataTransfer.setData('text/plain', id);
+}
+
+function onSectionDragOver(event, id) {
+  if (!sectionDragSourceId.value || sectionDragSourceId.value === id) return;
+  event.dataTransfer.dropEffect = 'move';
+  sectionDragOverId.value = id;
+  const bounds = event.currentTarget.getBoundingClientRect();
+  sectionDropAfter.value = event.clientY >= bounds.top + bounds.height / 2;
+}
+
+function onSectionDragLeave(event, id) {
+  if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return;
+  if (sectionDragOverId.value === id) sectionDragOverId.value = null;
+}
+
+function onSectionDrop(event, targetId) {
+  event.preventDefault();
+  const sourceId = sectionDragSourceId.value;
+  if (!sourceId || sourceId === targetId) { onSectionDragEnd(); return; }
+  const ids = sections.value.map(section => section.id);
+  if (!ids.includes(sourceId) || !ids.includes(targetId)) { onSectionDragEnd(); return; }
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const after = event.clientY >= bounds.top + bounds.height / 2;
+  const reordered = ids.filter(id => id !== sourceId);
+  reordered.splice(reordered.indexOf(targetId) + (after ? 1 : 0), 0, sourceId);
+  onSectionDragEnd();
+  if (ids.every((id, index) => id === reordered[index])) return;
+  reflowWorldBookSections(store.cardData.character_book, reordered);
+  store.markDirty();
+  appStore.toastSuccess('已移动整栏，栏内条目和酒馆顺序已同步');
+}
+
+function onSectionDragEnd() {
+  sectionDragSourceId.value = null;
+  sectionDragOverId.value = null;
+  sectionDropAfter.value = false;
+}
+
 function onDragStart(e, id) {
+  onSectionDragEnd();
   dragSourceId.value = id;
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', String(id));
 }
 
 function onDragOver(e, id) {
-  if (id === dragSourceId.value) return;
+  if (dragSourceId.value == null || id === dragSourceId.value) return;
   dragOverId.value = id;
   e.dataTransfer.dropEffect = 'move';
 }
@@ -816,7 +1003,7 @@ function onDragLeave(id) {
 
 function onDrop(e, targetId) {
   const sourceId = dragSourceId.value;
-  if (!sourceId || sourceId === targetId) {
+  if (sourceId == null || sourceId === targetId) {
     dragSourceId.value = null;
     dragOverId.value = null;
     return;
@@ -829,6 +1016,12 @@ function onDrop(e, targetId) {
   if (sourceIdx === -1 || targetIdx === -1) {
     dragSourceId.value = null;
     dragOverId.value = null;
+    return;
+  }
+
+  if (sectionForEntry(visible[sourceIdx], sections.value)?.id !== sectionForEntry(visible[targetIdx], sections.value)?.id) {
+    onDragEnd();
+    appStore.toastInfo('跨分隔栏移动请修改条目的酒馆顺序，拖拽仅调整栏内显示顺序');
     return;
   }
 
@@ -952,10 +1145,10 @@ ${entriesData.map(e => `条目名：${e.comment}\n关键词：${(e.keys || []).j
 输出JSON数组，每个对象包含 comment（条目名）和 content（改写后的内容）：
 [{ "comment": "条目名", "content": "改写后的内容" }]
 
-每条content控制在500字以内。只输出JSON。${buildRefNovelSegment()}`;
+每条content控制在500字以内。只输出JSON。${buildStrictWordingSegment()}${buildRefNovelSegment()}`;
 
     const parsed = await chatForJsonArray(apiStore, [
-      { role: 'system', content: '你是世界书改写专家。按照用户要求改写条目内容，保持条目名不变。只输出合法JSON数组。所有内容必须用中文，禁止英文。' },
+      { role: 'system', content: '你是世界书改写专家。按照用户要求改写条目内容，保持条目名不变。严格遵守严格用词设定（如果提供）。只输出合法JSON数组。所有内容必须用中文，禁止英文。' },
       { role: 'user', content: prompt }
     ], { temperature: 0.7, maxTokens: apiStore.getModelMaxTokens(apiStore.activeProvider?.model) });
 
@@ -1003,10 +1196,10 @@ ${aiRewriteReq.value || '优化内容，使其更加详细和生动'}
 ${r.oldContent}
 
 只输出一个JSON对象：{ "comment": "${r.comment}", "content": "改写后的内容" }
-只输出JSON。${buildRefNovelSegment()}`;
+只输出JSON。${buildStrictWordingSegment()}${buildRefNovelSegment()}`;
 
     const result = await apiStore.chat([
-      { role: 'system', content: '你是世界书改写专家。只输出合法JSON对象。所有内容必须用中文，禁止英文。' },
+      { role: 'system', content: '你是世界书改写专家。严格遵守严格用词设定（如果提供）。只输出合法JSON对象。所有内容必须用中文，禁止英文。' },
       { role: 'user', content: prompt }
     ], { temperature: 0.8, maxTokens: apiStore.getModelMaxTokens(apiStore.activeProvider?.model) });
 
@@ -1024,6 +1217,31 @@ ${r.oldContent}
 </script>
 
 <style scoped>
+.worldbook-page { width: 100%; max-width: none; min-width: 0; }
+.worldbook-page > .page__header { flex-wrap: wrap; gap: 16px; }
+.worldbook-actions { flex-wrap: wrap; justify-content: flex-end; }
+.wb-section-button { color: #93c5fd; background: #2563eb30; border: 1px solid #60a5fa80; }
+.wb-section-button:hover { color: #bfdbfe; background: #2563eb50; }
+.wb-section { border: 1px solid #60a5fa55; border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+.wb-section__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px; background: #2563eb20; }
+.wb-section__toggle { display: flex; flex: 1; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 160px; border: 0; background: none; color: #93c5fd; text-align: left; cursor: pointer; font: inherit; }
+.wb-section__toggle strong { overflow-wrap: anywhere; }
+.wb-section__drag-title { display: inline-flex; align-items: center; gap: 6px; cursor: grab; user-select: none; }
+.wb-section__drag-title:active { cursor: grabbing; }
+.wb-section--dragging { opacity: 0.45; }
+.wb-section--drop-before { border-top: 3px solid #60a5fa; }
+.wb-section--drop-after { border-bottom: 3px solid #60a5fa; }
+.wb-section__count, .wb-section__range, .wb-section__bounds { font-size: 12px; }
+.wb-section__count { padding: 2px 6px; background: #60a5fa20; border-radius: 4px; }
+.wb-section__range, .wb-section__bounds { color: #93b8e0; }
+.wb-section__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.wb-section__body { padding: 12px; }
+.wb-section__empty, .wb-ungrouped-title { padding: 12px; color: var(--cf-text-secondary); font-size: 12px; }
+.wb-grouping-hint { margin-bottom: 12px; font-size: 12px; color: var(--cf-text-secondary); }
+@media (max-width: 1000px) {
+  .worldbook-page :deep(.grid-3), .worldbook-page :deep(.grid-2) { grid-template-columns: minmax(0, 1fr); }
+  .worldbook-page :deep(.card__body.flex-row) { flex-wrap: wrap; }
+}
 .wb-stats {
   display: flex;
   gap: 8px;

@@ -3,6 +3,7 @@ import { createPinia } from 'pinia';
 import { createRouter, createWebHashHistory } from 'vue-router';
 import App from './App.vue';
 import errorLogger from './utils/error-logger.js';
+import { useCardStore } from './stores/card.js';
 
 // 在所有代码运行前安装错误捕获
 errorLogger.install();
@@ -29,11 +30,15 @@ import AiAssistant from './views/AiAssistant.vue';
 import CardDiagnostic from './views/CardDiagnostic.vue';
 import Statistics from './views/Statistics.vue';
 import ApiSettings from './views/ApiSettings.vue';
+import GeneralSettings from './views/GeneralSettings.vue';
+import AuthoringAgent from './views/AuthoringAgent.vue';
+import TavernLink from './views/TavernLink.vue';
 
 // Styles
 import './styles/main.scss';
 
 const routes = [
+  { path: '/settings', name: 'settings', component: GeneralSettings, meta: { title: '总设置' } },
   { path: '/', name: 'dashboard', component: Dashboard, meta: { title: '工作台' } },
   { path: '/basic', name: 'basic', component: BasicInfo, meta: { title: '基本信息' } },
   { path: '/charsetting', name: 'charsetting', component: CharSetting, meta: { title: '角色设定' } },
@@ -51,8 +56,10 @@ const routes = [
   { path: '/statusbar', name: 'statusbar', component: StatusBarEditor, meta: { title: '前端状态栏' } },
   { path: '/sandbox', name: 'sandbox', component: StatusBarSandbox, meta: { title: '状态栏沙盒' } },
   { path: '/package', name: 'package', component: PackageExport, meta: { title: '打包角色卡' } },
+  { path: '/tavern-link', name: 'tavern-link', component: TavernLink, meta: { title: '酒馆 Link' } },
   { path: '/diagnostic', name: 'diagnostic', component: CardDiagnostic, meta: { title: '角色卡诊断' } },
   { path: '/assistant', name: 'assistant', component: AiAssistant, meta: { title: 'AI 助手' } },
+  { path: '/agent', name: 'agent', component: AuthoringAgent, meta: { title: '创作 Agent' } },
   { path: '/statistics', name: 'statistics', component: Statistics, meta: { title: '卡片统计' } },
   { path: '/api', name: 'api', component: ApiSettings, meta: { title: 'API 设置' } }
 ];
@@ -72,4 +79,5 @@ app.config.errorHandler = (err, instance, info) => {
 };
 app.use(createPinia());
 app.use(router);
-app.mount('#app');
+// 先恢复草稿，再开放编辑，避免用户输入被异步恢复覆盖。
+useCardStore().initializeAutosave().finally(() => app.mount('#app'));

@@ -199,10 +199,11 @@ async function handleExport() {
     });
     if (!savePath) return;
 
-    if (savePath.endsWith('.json')) {
-      await api.writeFile(savePath, JSON.stringify(json, null, 2));
+    if (savePath.toLowerCase().endsWith('.json')) {
+      const result = await api.writeFile(savePath, JSON.stringify(json, null, 2));
+      if (!result?.success) throw new Error(result?.error || '文件写入失败');
       appStore.toastSuccess('JSON 导出成功');
-    } else if (savePath.endsWith('.png')) {
+    } else if (savePath.toLowerCase().endsWith('.png')) {
       if (!store.coverImagePath) {
         const imgPath = await api.openImage();
         if (!imgPath) { appStore.toastWarning('需要封面图片'); return; }
@@ -211,7 +212,7 @@ async function handleExport() {
       const result = await api.embedCharaData(store.coverImagePath, json, savePath);
       if (!result.success) throw new Error(result.error);
       appStore.toastSuccess('PNG 角色卡导出成功');
-    }
+    } else throw new Error('请选择 .png 或 .json 扩展名保存角色卡');
     store.isDirty = false;
   } catch (e) {
     appStore.toastError(`导出失败: ${e.message}`);

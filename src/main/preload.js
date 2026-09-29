@@ -1,6 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('cardForgeAPI', {
+  copyText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
+  selectBackgroundImage: () => ipcRenderer.invoke('appearance:selectBackground'),
+  loadBackgroundImage: () => ipcRenderer.invoke('appearance:loadBackground'),
+  loadCardDraft: () => ipcRenderer.invoke('draft:load'),
+  saveCardDraft: (snapshot) => ipcRenderer.invoke('draft:save', snapshot),
+  saveCardDraftSync: (snapshot) => ipcRenderer.sendSync('draft:saveSync', snapshot),
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
@@ -42,5 +48,9 @@ contextBridge.exposeInMainWorld('cardForgeAPI', {
 
   // Auto update
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
-  getAppVersion: () => ipcRenderer.invoke('update:getVersion')
+  getAppVersion: () => ipcRenderer.invoke('update:getVersion'),
+
+  // SillyTavern Link
+  tavernStatus: () => ipcRenderer.invoke('tavern:status'),
+  tavernRequest: (options) => ipcRenderer.invoke('tavern:request', options)
 });

@@ -86,7 +86,13 @@ function install() {
 function logVueError(err, instance, info) {
   const msg = err && err.message ? err.message : String(err);
   const stack = err && err.stack ? err.stack : '';
-  record('vue', msg, stack, { hookInfo: info });
+  // 只记录组件身份和路由路径，不记录 props、表单内容或路由查询参数。
+  record('vue', msg, stack, {
+    hookInfo: info,
+    component: instance?.$options?.name || instance?.$options?.__name || 'unknown',
+    componentFile: instance?.$options?.__file || '',
+    route: instance?.$route?.path || ''
+  });
 }
 
 function getBuffer() {
