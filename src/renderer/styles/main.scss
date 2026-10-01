@@ -130,6 +130,23 @@ html, body, #app {
   background-repeat: no-repeat;
 }
 
+.solid-background-layer {
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+}
+
+.background-color-input {
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  margin-left: 6px;
+  border: 1px solid var(--cf-border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+
 .starfilter-layer {
   position: fixed;
   inset: 0;

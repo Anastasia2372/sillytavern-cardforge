@@ -6,6 +6,8 @@ export const useAppStore = defineStore('app', () => {
   const theme = ref('dark');
   const sidebarCollapsed = ref(false);
   const glowEnabled = ref(true);
+  const solidBackground = ref(false);
+  const backgroundColor = ref('#0d1117');
   const toasts = ref([]);
 
   // 自定义确认弹窗状态
@@ -50,6 +52,26 @@ export const useAppStore = defineStore('app', () => {
         glowEnabled.value = false;
         document.body.classList.add('no-glow');
       }
+      if (settings.solidBackground === true) solidBackground.value = true;
+      if (/^#[0-9a-fA-F]{6}$/.test(settings.backgroundColor || '')) backgroundColor.value = settings.backgroundColor;
+    } catch (e) {}
+  }
+
+  function toggleSolidBackground() {
+    solidBackground.value = !solidBackground.value;
+    saveBackground();
+  }
+
+  function setBackgroundColor(color) {
+    backgroundColor.value = color;
+  }
+
+  async function saveBackground() {
+    try {
+      const settings = await window.cardForgeAPI.loadSettings() || {};
+      settings.solidBackground = solidBackground.value;
+      settings.backgroundColor = backgroundColor.value;
+      await window.cardForgeAPI.saveSettings(settings);
     } catch (e) {}
   }
 
@@ -129,10 +151,11 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
-    theme, sidebarCollapsed, glowEnabled, toasts,
+    theme, sidebarCollapsed, glowEnabled, solidBackground, backgroundColor, toasts,
     confirmVisible, confirmMessage,
     chooseVisible, chooseMessage, chooseOptions,
     toggleTheme, setTheme, loadTheme, toggleSidebar, toggleGlow,
+    toggleSolidBackground, setBackgroundColor, saveBackground,
     toast, toastSuccess, toastError, toastWarning, toastInfo,
     confirmAction, confirmYes, confirmNo,
     chooseAction, chooseResolve

@@ -47,6 +47,7 @@
           :class="['chat-msg', 'chat-msg--' + msg.role]">
           <div class="chat-msg__role">{{ msg.role === 'user' ? '你' : 'AI' }}</div>
           <div class="chat-msg__content">{{ msg.content }}</div>
+          <div v-if="msg.attachments?.length" class="chat-msg__attachments">附件：{{ msg.attachments.map(a => a.name).join('、') }}</div>
         </div>
         <div v-if="chatLoading" class="chat-msg chat-msg--assistant">
           <div class="chat-msg__role">AI</div>
@@ -54,12 +55,13 @@
         </div>
       </div>
 
+      <ChatAttachmentBar v-model="pendingAttachments" :disabled="chatLoading" />
       <div class="chat-input">
         <textarea class="textarea chat-input__box" v-model="userInput" rows="2"
           placeholder="输入消息... (Ctrl+Enter 发送)"
           @keydown.ctrl.enter="sendMessage"
           :disabled="chatLoading"></textarea>
-        <button class="btn btn--primary" @click="sendMessage" :disabled="chatLoading || !userInput.trim()">
+        <button class="btn btn--primary" @click="sendMessage" :disabled="chatLoading || (!userInput.trim() && pendingAttachments.length === 0)">
           {{ chatLoading ? '...' : '发送' }}
         </button>
       </div>
@@ -68,6 +70,8 @@
 </template>
 
 <script setup>
+import ChatAttachmentBar from '../components/ChatAttachmentBar.vue';
+import { toApiMessage, stripAttachmentData } from '../utils/chat-attachments.js';
 import { ref, nextTick, onMounted, onUnmounted } from 'vue';
 import { useCardStore } from '../stores/card.js';
 import { useApiStore } from '../stores/api.js';
@@ -82,6 +86,7 @@ const messages = ref([]);
 const userInput = ref('');
 const chatLoading = ref(false);
 const chatBox = ref(null);
+const pendingAttachments = ref([]);
 const showHistory = ref(false);
 
 // 对话历史
@@ -113,7 +118,7 @@ function saveCurrentToHistory() {
 
   chatHistory.value.unshift({
     title, preview, time,
-    messages: JSON.parse(JSON.stringify(messages.value))
+    messages: stripAttachmentData(messages.value)
   });
 
   if (chatHistory.value.length > HISTORY_MAX) {
@@ -144,15 +149,17 @@ function deleteHistory(index) {
 }
 
 async function sendMessage() {
-  if (!userInput.value.trim() || chatLoading.value) return;
+  const attachments = pendingAttachments.value;
+  if ((!userInput.value.trim() && attachments.length === 0) || chatLoading.value) return;
   if (!apiStore.isConfigured) {
     appStore.toastError('请先在 API 设置中配置 API Key');
     return;
   }
 
-  const text = userInput.value.trim();
-  messages.value.push({ role: 'user', content: text });
+  const text = userInput.value.trim() || '请看附件。';
+  messages.value.push({ role: 'user', content: text, ...(attachments.length ? { attachments } : {}) });
   userInput.value = '';
+  pendingAttachments.value = [];
   chatLoading.value = true;
   scrollToBottom();
 
@@ -160,7 +167,7 @@ async function sendMessage() {
     const systemPrompt = buildSystemPrompt(text);
     const chatMessages = [
       { role: 'system', content: systemPrompt },
-      ...messages.value.slice(-20).map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }))
+      ...messages.value.slice(-20).map(toApiMessage)
     ];
 
     const result = await apiStore.chat(chatMessages, { temperature: 0.8, maxTokens: apiStore.getModelMaxTokens(apiStore.activeProvider?.model) });
@@ -276,6 +283,7 @@ onUnmounted(() => {
 }
 
 .chat-input__box { flex: 1; min-height: 40px; resize: none; }
+.chat-msg__attachments { margin-top: 4px; font-size: 11px; color: var(--cf-text-muted); }
 
 .history-item {
   padding: 10px 12px;

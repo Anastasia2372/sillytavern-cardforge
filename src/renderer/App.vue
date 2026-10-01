@@ -1,11 +1,12 @@
 <template>
   <div class="app-root">
     <!-- 壁纸层 -->
-    <div class="wallpaper-layer" :style="wallpaperStyle"></div>
+    <div v-if="appStore.solidBackground" class="solid-background-layer" :style="{ background: appStore.backgroundColor }"></div>
+    <div v-else class="wallpaper-layer" :style="wallpaperStyle"></div>
     <!-- 蓝色星空滤镜层 -->
-    <div class="starfilter-layer"></div>
+    <div v-if="!appStore.solidBackground" class="starfilter-layer"></div>
     <!-- 星空粒子 -->
-    <div class="starfield">
+    <div v-if="!appStore.solidBackground" class="starfield">
       <div v-for="star in stars" :key="star.id" class="starfield__star" :style="star.style"></div>
     </div>
 
@@ -131,6 +132,15 @@
               <span class="sidebar__item-icon">·</span> 流光边框
               <span class="badge" :class="appStore.glowEnabled ? 'badge--success' : 'badge--warning'">
                 {{ appStore.glowEnabled ? '开' : '关' }}
+              </span>
+            </div>
+            <div class="sidebar__item" style="cursor:pointer" @click="appStore.toggleSolidBackground()">
+              <span class="sidebar__item-icon">·</span> 纯色背景
+              <input v-if="appStore.solidBackground" type="color" class="background-color-input" title="选择背景颜色"
+                :value="appStore.backgroundColor" @click.stop
+                @input="appStore.setBackgroundColor($event.target.value)" @change="appStore.saveBackground()">
+              <span class="badge" :class="appStore.solidBackground ? 'badge--success' : 'badge--warning'">
+                {{ appStore.solidBackground ? '开' : '关' }}
               </span>
             </div>
             <div class="sidebar__item" style="cursor:pointer" @click="showErrorLog = true">

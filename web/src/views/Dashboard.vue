@@ -70,7 +70,7 @@
         </div>
 
         <div class="flex-row mt-md">
-          <button class="btn btn--primary" @click="$router.push('/editor')">编辑角色卡</button>
+          <button class="btn btn--primary" @click="$router.push('/basic')">编辑角色卡</button>
           <button class="btn btn--secondary" @click="handleExport">导出</button>
         </div>
       </div>
@@ -137,7 +137,7 @@ const showAssetImport = ref(false);
 
 function handleNew() {
   cardStore.newCard();
-  router.push('/editor');
+  router.push('/basic');
   appStore.toastSuccess('已创建新角色卡');
 }
 
@@ -162,7 +162,7 @@ async function handleImport() {
       throw new Error('不支持的文件格式');
     }
     appStore.toastSuccess(`已导入: ${cardStore.cardName}`);
-    router.push('/editor');
+    router.push('/basic');
   } catch (e) {
     appStore.toastError(`导入失败: ${e.message}`);
   }

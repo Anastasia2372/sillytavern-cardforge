@@ -132,6 +132,7 @@
           <div class="chat-msg__content">
             <div class="chat-msg__name" :style="{ color: msg.color || '#9896a8' }">{{ msg.name }}</div>
             <div class="chat-msg__text selectable" v-html="formatMsg(msg.content)"></div>
+            <div v-if="msg.attachments?.length" class="chat-msg__attachments">附件：{{ msg.attachments.map(a => a.name).join('、') }}</div>
           </div>
         </div>
 
@@ -142,11 +143,12 @@
         </div>
       </div>
 
+      <ChatAttachmentBar v-model="pendingAttachments" :disabled="loading" />
       <div class="chat-input">
         <textarea class="textarea" v-model="inputText" rows="2"
           placeholder="输入消息... (Enter 发送)"
           @keydown.enter.exact.prevent="send" :disabled="loading"></textarea>
-        <button class="btn btn--primary" @click="send" :disabled="loading || !inputText.trim()">发送</button>
+        <button class="btn btn--primary" @click="send" :disabled="loading || (!inputText.trim() && pendingAttachments.length === 0)">发送</button>
       </div>
     </div>
 
@@ -168,6 +170,8 @@ import { useCardStore } from '../stores/card.js';
 import { useApiStore } from '../stores/api.js';
 import { useAppStore } from '../stores/app.js';
 import { useAiNiangStore } from '../stores/ainiang.js';
+import ChatAttachmentBar from '../components/ChatAttachmentBar.vue';
+import { toApiMessage, stripAttachmentData } from '../utils/chat-attachments.js';
 
 const cardStore = useCardStore();
 const apiStore = useApiStore();
@@ -176,6 +180,7 @@ const niangStore = useAiNiangStore();
 
 const messages = ref([]);
 const inputText = ref('');
+const pendingAttachments = ref([]);
 const loading = ref(false);
 const messagesRef = ref(null);
 const showConfig = ref(false);
@@ -229,7 +234,7 @@ function saveCurrentToHistory() {
     title,
     preview,
     time,
-    messages: JSON.parse(JSON.stringify(messages.value))
+    messages: stripAttachmentData(messages.value)
   });
 
   if (chatHistory.value.length > HISTORY_MAX) {
@@ -426,12 +431,14 @@ async function scrollBottom() {
 }
 
 async function send() {
-  const text = inputText.value.trim();
+  const attachments = pendingAttachments.value;
+  const text = inputText.value.trim() || (attachments.length ? '请看附件。' : '');
   if (!text || loading.value) return;
   if (!apiStore.isConfigured) { appStore.toastError('请先配置 API Key'); return; }
 
-  messages.value.push({ id: ++msgId, role: 'user', name: '你', content: text, color: '#f59e42' });
+  messages.value.push({ id: ++msgId, role: 'user', name: '你', content: text, color: '#f59e42', ...(attachments.length ? { attachments } : {}) });
   inputText.value = '';
+  pendingAttachments.value = [];
   loading.value = true;
   await scrollBottom();
 
@@ -450,7 +457,7 @@ async function sendSingle(text, niang) {
   const history = messages.value.filter(m => m.role === 'user' || m.niangId === niang.id).slice(-10);
   const chatMsgs = [
     { role: 'system', content: sysPrompt },
-    ...history.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }))
+    ...history.map(toApiMessage)
   ];
   // 如果角色有自己的 API 设置就用自己的，否则走全局
   let result;
@@ -514,6 +521,7 @@ async function sendSingle(text, niang) {
   display: flex; gap: 8px; align-items: flex-end;
 }
 .chat-input .textarea { flex: 1; min-height: unset; resize: none; }
+.chat-msg__attachments { margin-top: 4px; font-size: 11px; color: var(--cf-text-muted); }
 
 /* ── 对话记录 ── */
 .history-item {

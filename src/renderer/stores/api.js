@@ -143,6 +143,33 @@ export const useApiStore = defineStore('api', () => {
     throw new Error(`不支持的 API 类型: ${provider.type}`);
   }
 
+  function openAIMessages(messages) {
+    return messages.map(m => m.images?.length
+      ? {
+        role: m.role,
+        content: [
+          { type: 'text', text: m.content },
+          ...m.images.map(img => ({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } }))
+        ]
+      }
+      : { role: m.role, content: m.content });
+  }
+
+  function claudeContent(m) {
+    if (!m.images?.length) return m.content;
+    return [
+      ...m.images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.data } })),
+      { type: 'text', text: m.content }
+    ];
+  }
+
+  function geminiParts(m) {
+    return [
+      { text: m.content },
+      ...(m.images || []).map(img => ({ inline_data: { mime_type: img.mime, data: img.data } }))
+    ];
+  }
+
   async function callOpenAI(provider, messages, temperature, maxTokens) {
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -153,7 +180,7 @@ export const useApiStore = defineStore('api', () => {
       },
       body: JSON.stringify({
         model: provider.model,
-        messages,
+        messages: openAIMessages(messages),
         temperature,
         max_tokens: maxTokens
       })
@@ -181,7 +208,7 @@ export const useApiStore = defineStore('api', () => {
       model: provider.model,
       max_tokens: maxTokens,
       temperature,
-      messages: userMessages.map(m => ({ role: m.role, content: m.content }))
+      messages: userMessages.map(m => ({ role: m.role, content: claudeContent(m) }))
     };
     if (systemMsg) body.system = systemMsg.content;
 
@@ -223,7 +250,7 @@ export const useApiStore = defineStore('api', () => {
       } else {
         contents.push({
           role: msg.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: msg.content }]
+          parts: geminiParts(msg)
         });
       }
     }
@@ -272,7 +299,7 @@ export const useApiStore = defineStore('api', () => {
         'Content-Type': 'application/json',
         ...authHeaders(provider)
       },
-      body: JSON.stringify({ model: provider.model, messages, temperature, max_tokens: maxTokens, stream: true })
+      body: JSON.stringify({ model: provider.model, messages: openAIMessages(messages), temperature, max_tokens: maxTokens, stream: true })
     });
     if (!response.ok) {
       const err = await response.text();
@@ -307,7 +334,7 @@ export const useApiStore = defineStore('api', () => {
     const userMessages = messages.filter(m => m.role !== 'system');
     const body = {
       model: provider.model, max_tokens: maxTokens, temperature, stream: true,
-      messages: userMessages.map(m => ({ role: m.role, content: m.content }))
+      messages: userMessages.map(m => ({ role: m.role, content: claudeContent(m) }))
     };
     if (systemMsg) body.system = systemMsg.content;
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
@@ -354,7 +381,7 @@ export const useApiStore = defineStore('api', () => {
     let systemInstruction = null;
     for (const msg of messages) {
       if (msg.role === 'system') { systemInstruction = msg.content; }
-      else { contents.push({ role: msg.role === 'assistant' ? 'model' : 'user', parts: [{ text: msg.content }] }); }
+      else { contents.push({ role: msg.role === 'assistant' ? 'model' : 'user', parts: geminiParts(msg) }); }
     }
     const body = { contents, generationConfig: { temperature, maxOutputTokens: maxTokens } };
     if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
