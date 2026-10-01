@@ -2,7 +2,7 @@
   <div class="page">
     <div class="page__header">
       <h1>API 设置</h1>
-      <p>配置 AI 服务商 — 填写 Key 和模型后可在 NPC 生成器、AI 助手中使用</p>
+      <p>配置 AI 服务商 — 填好并设为当前后可在 NPC 生成器、AI 助手中使用</p>
     </div>
 
     <!-- 当前激活服务商状态条 -->
@@ -26,11 +26,12 @@
 
     <div class="card mb-md">
       <div class="card__body hint" style="line-height:1.8">
-        本软件所有 AI 功能（NPC 生成、世界书生成、开场白生成、AI 助手等）都需要配置 API Key 才能使用。<br>
+        本软件所有 AI 功能（NPC 生成、世界书生成、开场白生成、AI 助手等）都需要先在这里配置服务商才能使用。<br>
         · <strong>OpenAI 兼容</strong> — 支持 OpenAI 官方、各类中转站、DeepSeek、本地 Ollama 等所有兼容 OpenAI 格式的服务<br>
         · <strong>Claude</strong> — Anthropic 官方 API<br>
         · <strong>Gemini</strong> — Google 官方 API<br>
         · 配置好多个服务商后，点每个卡片头部的「设为当前」选择实际使用哪个<br>
+        · 本地模型不需要 Key：填好 Base URL 和模型后直接点「设为当前」<br>
         · 你的 Key 只保存在本地（自动保存，无需手动操作）<br>
         · 点「+ 添加自定义服务商」可以添加更多 API 源
       </div>
@@ -43,13 +44,13 @@
           <label class="active-radio" :class="{ checked: apiStore.activeProviderId === provider.id }">
             <input type="radio" name="active-provider"
               :checked="apiStore.activeProviderId === provider.id"
-              :disabled="!provider.apiKey"
+              :disabled="!apiStore.canUse(provider)"
               @change="apiStore.setActiveProvider(provider.id)">
             <span>{{ apiStore.activeProviderId === provider.id ? '当前使用' : '设为当前' }}</span>
           </label>
           <h3>{{ provider.name }}</h3>
           <span v-if="provider.apiKey" class="badge badge--success">已配置</span>
-          <span v-else class="badge badge--warning">未配置</span>
+          <span v-else class="badge badge--warning">未填 Key</span>
         </div>
         <div class="flex-row">
           <button v-if="provider.id.startsWith('custom_')"
@@ -77,7 +78,7 @@
             <label>API Key</label>
             <div class="flex-row">
               <input :type="showKeys[provider.id] ? 'text' : 'password'" class="input flex-1"
-                v-model="provider.apiKey" placeholder="输入 API Key">
+                v-model="provider.apiKey" placeholder="输入 API Key（本地模型可留空）">
               <button class="btn btn--ghost btn--sm"
                 @click="showKeys[provider.id] = !showKeys[provider.id]">
                 {{ showKeys[provider.id] ? '隐藏' : '显示' }}
@@ -92,9 +93,9 @@
                 <option v-for="m in modelLists[provider.id]" :key="m" :value="m">{{ m }}</option>
               </select>
               <input v-else class="input flex-1" v-model="provider.model"
-                placeholder="填入Key后点右侧获取">
+                placeholder="填好 Base URL 后点右侧获取，或手动输入">
               <button class="btn btn--secondary btn--sm" @click="loadModels(provider)"
-                :disabled="modelLoading[provider.id] || !provider.apiKey">
+                :disabled="modelLoading[provider.id]">
                 {{ modelLoading[provider.id] ? '获取中...' : '获取模型' }}
               </button>
             </div>
@@ -113,6 +114,14 @@
               @input="provider.temperature = Math.min(2, Math.max(0, parseFloat($event.target.value) || 0))">
           </div>
           <div class="hint" style="margin-top:4px">0 = 确定性最高 · 1 = 均衡 · 2 = 最随机。默认 0.8，创意内容可调高，JSON 生成建议 0.6~0.8</div>
+        </div>
+        <div class="form-group">
+          <label>最大输出长度 (Max Tokens)</label>
+          <input type="number" class="input max-tokens-input" min="1" step="1"
+            :value="provider.maxTokens || ''"
+            :placeholder="`自动：${apiStore.lookupModelMaxTokens(provider.model)}`"
+            @input="setMaxTokens(provider, $event.target.value)">
+          <div class="hint" style="margin-top:4px">留空按模型名自动判断。生成的状态栏、世界书经常被截断时，按服务商文档里该模型的最大输出填大一些；填得超过模型上限接口会报错</div>
         </div>
         <div class="form-group">
           <label class="toggle-label">
@@ -141,8 +150,12 @@ const lastSavedAt = ref('');
 const modelLists = reactive({});
 const modelLoading = reactive({});
 
+function setMaxTokens(provider, raw) {
+  const n = Math.floor(Number(raw));
+  provider.maxTokens = n > 0 ? n : null;
+}
+
 async function loadModels(provider) {
-  if (!provider.apiKey) { appStore.toastWarning('请先填写 API Key'); return; }
   if (!provider.baseUrl) { appStore.toastWarning('请先填写 Base URL'); return; }
   modelLoading[provider.id] = true;
   try {
@@ -154,7 +167,7 @@ async function loadModels(provider) {
       }
       appStore.toastSuccess(`获取到 ${models.length} 个模型`);
     } else {
-      appStore.toastWarning('未获取到模型列表，请检查 Key 和 Base URL');
+      appStore.toastWarning('未获取到模型列表，请检查 Key 和 Base URL，或直接手动输入模型名');
     }
   } catch (e) {
     appStore.toastError('获取模型失败: ' + e.message);
@@ -179,20 +192,21 @@ watch(
 );
 
 async function testConnection(provider) {
-  if (!provider.apiKey) {
-    appStore.toastWarning('请先填写 API Key');
+  if (!apiStore.canUse(provider)) {
+    appStore.toastWarning('请先填写 Base URL 和模型');
     return;
   }
+  const origActive = apiStore.activeProviderId;
   try {
-    const origActive = apiStore.activeProviderId;
     apiStore.setActiveProvider(provider.id);
     const result = await apiStore.chat([
       { role: 'user', content: '请回复"连接成功"四个字' }
-    ], { maxTokens: 20 });
-    apiStore.setActiveProvider(origActive);
+    ]);
     appStore.toastSuccess(`${provider.name} 连接成功: ${result.slice(0, 30)}`);
   } catch (e) {
     appStore.toastError(`连接失败: ${e.message}`);
+  } finally {
+    apiStore.setActiveProvider(origActive);
   }
 }
 </script>
@@ -207,6 +221,9 @@ async function testConnection(provider) {
   flex: 1;
   accent-color: var(--cf-accent);
   cursor: pointer;
+}
+.max-tokens-input {
+  width: 180px;
 }
 .temperature-input {
   width: 70px;

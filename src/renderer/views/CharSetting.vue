@@ -131,9 +131,9 @@
         </div>
         <div class="form-group">
           <label>标签 (tags)</label>
-          <input class="input" :value="(d.tags || []).join(', ')"
-            @input="d.tags = $event.target.value.split(',').map(t => t.trim()).filter(Boolean); markDirty()"
-            placeholder="用逗号分隔，如：校园, 日常, 恋爱">
+          <CommaListInput class="input" :model-value="d.tags || []"
+            @update:model-value="d.tags = $event; markDirty()"
+            placeholder="用逗号分隔，如：校园, 日常, 恋爱" />
         </div>
       </div>
     </div>
@@ -141,6 +141,7 @@
 </template>
 
 <script setup>
+import CommaListInput from '../components/CommaListInput.vue';
 import { computed } from 'vue';
 import { useCardStore } from '../stores/card.js';
 

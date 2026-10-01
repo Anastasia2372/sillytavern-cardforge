@@ -44,11 +44,22 @@ export const useApiStore = defineStore('api', () => {
     }
   }
 
+  function canUse(provider) {
+    return !!(provider && provider.baseUrl && provider.model);
+  }
+
+  function authHeaders(provider) {
+    if (!provider.apiKey) return {};
+    if (provider.type === 'claude') return { 'x-api-key': provider.apiKey };
+    if (provider.type === 'gemini') return { 'x-goog-api-key': provider.apiKey };
+    return { 'Authorization': `Bearer ${provider.apiKey}` };
+  }
+
   const activeProvider = computed(() => {
     if (activeProviderId.value) {
       const p = providers.value.find(p => p.id === activeProviderId.value);
       // 主动选的就用，即使没启用也用（用户意图优先）
-      if (p && p.apiKey) return p;
+      if (canUse(p)) return p;
     }
     // fallback：第一个启用且有 key 的
     return providers.value.find(p => p.enabled && p.apiKey);
@@ -61,45 +72,56 @@ export const useApiStore = defineStore('api', () => {
   // AI API call
   async function chat(messages, options = {}) {
     const provider = activeProvider.value;
-    if (!provider || !provider.apiKey) {
-      throw new Error('请先在 API 设置中配置至少一个 AI 服务商的 API Key');
+    if (!provider) {
+      throw new Error('请先在 API 设置中配置并选择一个 AI 服务商');
     }
     return _callProvider(provider, messages, options);
   }
 
   // 用指定 provider 直接调用，不污染 store（用于 AI 娘自带 API 配置等场景）
   async function chatWithProvider(provider, messages, options = {}) {
-    if (!provider || !provider.apiKey) {
-      throw new Error('provider 缺少 apiKey');
+    if (!canUse(provider)) {
+      throw new Error('provider 缺少 baseUrl 或 model');
     }
     return _callProvider(provider, messages, options);
   }
 
-  function getModelMaxTokens(model) {
+  function lookupModelMaxTokens(model) {
     const m = (model || '').toLowerCase();
-    // Claude
-    if (m.includes('opus') || m.includes('sonnet-4') || m.includes('claude-4')) return 16384;
-    if (m.includes('claude-3-5') || m.includes('claude-3.5')) return 8192;
-    if (m.includes('claude')) return 4096;
-    // OpenAI
-    if (m.includes('gpt-4o') || m.includes('gpt-4-turbo') || m.includes('o1') || m.includes('o3') || m.includes('o4')) return 16384;
-    if (m.includes('gpt-4')) return 8192;
+    if (m.includes('gemini')) {
+      if (m.includes('gemini-1')) return 8192;
+      if (m.includes('gemini-2.0') || m.includes('gemini-2-0')) return 8192;
+      return 65536;
+    }
+    if (m.includes('claude') || m.includes('fable') || m.includes('opus') || m.includes('sonnet') || m.includes('haiku')) {
+      if (m.includes('claude-3-5') || m.includes('claude-3.5')) return 8192;
+      if (m.includes('claude-3-7') || m.includes('claude-3.7')) return 32000;
+      if (m.includes('claude-3') || m.includes('claude-2')) return 4096;
+      return 32000;
+    }
     if (m.includes('gpt-3.5')) return 4096;
-    // Gemini（新到旧）
-    if (m.includes('gemini-3') || m.includes('gemini-4')) return 65536;
-    if (m.includes('gemini-2.5') || m.includes('gemini-2-5')) return 65536;
-    if (m.includes('gemini-2')) return 32768;
-    if (m.includes('gemini-1.5-pro')) return 8192;
-    if (m.includes('gemini')) return 8192;
-    // DeepSeek / Qwen 等中转常见模型
-    if (m.includes('deepseek')) return 8192;
-    if (m.includes('qwen')) return 8192;
-    return 4096;
+    if (m.includes('gpt-4o') || m.includes('gpt-4-turbo')) return 16384;
+    if (m.includes('gpt-4.1') || m.includes('gpt-4.5')) return 32768;
+    if (m.includes('gpt-4')) return 8192;
+    if (/gpt-?[5-9]/.test(m) || /(^|[^a-z0-9])o[134](-|$)/.test(m)) return 32768;
+    if (m.includes('deepseek')) return m.includes('reasoner') ? 32768 : 8192;
+    return 8192;
+  }
+
+  function providerMaxTokens(provider) {
+    const custom = Number(provider?.maxTokens);
+    return custom > 0 ? Math.floor(custom) : lookupModelMaxTokens(provider?.model);
+  }
+
+  function getModelMaxTokens(model) {
+    const p = activeProvider.value;
+    if (p && p.model === model) return providerMaxTokens(p);
+    return lookupModelMaxTokens(model);
   }
 
   async function _callProvider(provider, messages, options) {
     const temperature = options.temperature ?? provider.temperature ?? 0.8;
-    const modelMax = getModelMaxTokens(provider.model);
+    const modelMax = providerMaxTokens(provider);
     const maxTokens = Math.min(options.maxTokens ?? modelMax, modelMax);
     const onChunk = options.onChunk || null;
 
@@ -125,7 +147,7 @@ export const useApiStore = defineStore('api', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${provider.apiKey}`
+        ...authHeaders(provider)
       },
       body: JSON.stringify({
         model: provider.model,
@@ -166,7 +188,7 @@ export const useApiStore = defineStore('api', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': provider.apiKey,
+        ...authHeaders(provider),
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true'
       },
@@ -179,11 +201,13 @@ export const useApiStore = defineStore('api', () => {
     }
 
     const data = await response.json();
-    const text = data?.content?.[0]?.text;
-    if (typeof text !== 'string') {
+    const textBlocks = Array.isArray(data?.content)
+      ? data.content.filter(b => b?.type === 'text' && typeof b.text === 'string')
+      : [];
+    if (textBlocks.length === 0) {
       throw new Error('Claude 返回数据异常：' + JSON.stringify(data).slice(0, 200));
     }
-    return text;
+    return textBlocks.map(b => b.text).join('');
   }
 
   async function callGemini(provider, messages, temperature, maxTokens) {
@@ -220,7 +244,7 @@ export const useApiStore = defineStore('api', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': provider.apiKey
+        ...authHeaders(provider)
       },
       body: JSON.stringify(body)
     });
@@ -242,7 +266,7 @@ export const useApiStore = defineStore('api', () => {
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
+      headers: { 'Content-Type': 'application/json', ...authHeaders(provider) },
       body: JSON.stringify({ model: provider.model, messages, temperature, max_tokens: maxTokens, stream: true })
     });
     if (!response.ok) { const err = await response.text(); throw new Error(`OpenAI API 错误 (${response.status}): ${err}`); }
@@ -272,7 +296,7 @@ export const useApiStore = defineStore('api', () => {
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': provider.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders(provider), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
       body: JSON.stringify(body)
     });
     if (!response.ok) { const err = await response.text(); throw new Error(`Claude API 错误 (${response.status}): ${err}`); }
@@ -304,7 +328,7 @@ export const useApiStore = defineStore('api', () => {
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     const response = await fetch(`${baseUrl}/v1beta/models/${provider.model}:streamGenerateContent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': provider.apiKey },
+      headers: { 'Content-Type': 'application/json', ...authHeaders(provider) },
       body: JSON.stringify(body)
     });
     if (!response.ok) { const err = await response.text(); throw new Error(`Gemini API 错误 (${response.status}): ${err}`); }
@@ -393,25 +417,25 @@ export const useApiStore = defineStore('api', () => {
   }
 
   async function fetchModels(provider) {
-    if (!provider || !provider.apiKey) return [];
+    if (!provider || !provider.baseUrl) return [];
     const baseUrl = (provider.baseUrl || '').replace(/\/+$/, '');
     try {
       if (provider.type === 'openai') {
         const resp = await fetch(`${baseUrl}/models`, {
-          headers: { 'Authorization': `Bearer ${provider.apiKey}` }
+          headers: { ...authHeaders(provider) }
         });
         if (!resp.ok) return [];
         const data = await resp.json();
         return (data.data || []).map(m => m.id).sort();
       } else if (provider.type === 'claude') {
         const resp = await fetch(`${baseUrl}/v1/models`, {
-          headers: { 'x-api-key': provider.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
+          headers: { ...authHeaders(provider), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }
         });
         if (!resp.ok) return [];
         const data = await resp.json();
         return (data.data || []).map(m => m.id).sort();
       } else if (provider.type === 'gemini') {
-        const resp = await fetch(`${baseUrl}/v1beta/models?key=${provider.apiKey}`);
+        const resp = await fetch(`${baseUrl}/v1beta/models`, { headers: authHeaders(provider) });
         if (!resp.ok) return [];
         const data = await resp.json();
         return (data.models || []).map(m => m.name.replace('models/', '')).sort();
@@ -422,7 +446,7 @@ export const useApiStore = defineStore('api', () => {
 
   return {
     providers, activeProviderId, activeProvider, isConfigured,
-    chat, chatWithProvider, getModelMaxTokens, fetchModels, loadFromDisk, saveToDisk, addProvider, removeProvider, initDefaults,
+    chat, chatWithProvider, getModelMaxTokens, lookupModelMaxTokens, canUse, fetchModels, loadFromDisk, saveToDisk, addProvider, removeProvider, initDefaults,
     setActiveProvider
   };
 });

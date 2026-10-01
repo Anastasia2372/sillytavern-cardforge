@@ -58,8 +58,8 @@
         </div>
         <div class="form-group">
           <label>关键词 (keys)</label>
-          <input class="input" :value="(entry.keys || []).join(', ')"
-            @input="entry.keys = $event.target.value.split(',').map(k => k.trim()).filter(Boolean); markDirty()">
+          <CommaListInput class="input" :model-value="entry.keys || []"
+            @update:model-value="entry.keys = $event; markDirty()" />
           <div class="hint">用逗号分隔多个关键词</div>
         </div>
       </div>
@@ -135,8 +135,8 @@
 
       <div v-if="entry.selective" class="form-group mt-md">
         <label>二级关键词 (secondary_keys)</label>
-        <input class="input" :value="(entry.secondary_keys || []).join(', ')"
-          @input="entry.secondary_keys = $event.target.value.split(',').map(k => k.trim()).filter(Boolean); markDirty()">
+        <CommaListInput class="input" :model-value="entry.secondary_keys || []"
+          @update:model-value="entry.secondary_keys = $event; markDirty()" />
         <div class="hint">需要同时满足主关键词和二级关键词才触发</div>
       </div>
 
@@ -217,6 +217,7 @@
 </template>
 
 <script setup>
+import CommaListInput from './CommaListInput.vue';
 import { ref } from 'vue';
 import { useCardStore } from '../stores/card.js';
 import { useAppStore } from '../stores/app.js';

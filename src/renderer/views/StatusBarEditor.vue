@@ -186,6 +186,7 @@ import { useCardStore } from '../stores/card.js';
 import { useApiStore } from '../stores/api.js';
 import { useAppStore } from '../stores/app.js';
 import { buildCardContext } from '../utils/card-context.js';
+import { parseInitVarPaths } from '../utils/initvar-parse.js';
 
 const cardStore = useCardStore();
 const apiStore = useApiStore();
@@ -257,44 +258,24 @@ const mvuPreview = computed(() => {
   return e ? (e.content || '(空)') : '(未找到)';
 });
 
-function collectExistingPaths() {
-  const paths = [];
+function collectExistingVars() {
+  const saved = cardStore.cardData.extensions?.cfMvuVarGroups;
+  if (Array.isArray(saved)) {
+    const list = [];
+    for (const g of saved) {
+      if (!g.name) continue;
+      for (const f of g.fields || []) {
+        if (!f.name) continue;
+        list.push({ group: g.name, field: f.name, type: f.type || 'string', default: String(f.defaultValue ?? '') });
+      }
+    }
+    if (list.length > 0) return list;
+  }
   const e = cardStore.worldEntries.find(e => {
     const c = (e.comment || '').toLowerCase();
     return c.includes('initvar') || c.includes('变量初始化');
   });
-  if (!e || !e.content) return paths;
-  const lines = e.content.split('\n');
-  let stack = []; /* 用栈跟踪嵌套层级 */
-  let prevIndent = -1;
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t || t.startsWith('#') || t.startsWith('<') || t === '{}' || t === '[]') continue;
-    const indent = line.search(/\S/);
-    const m = t.match(/^(\S+)\s*[:：]\s*(.*)/);
-    if (!m) continue;
-    const key = m[1].replace(/['"]/g, '');
-    const val = (m[2] || '').trim();
-    /* 调整栈深度 */
-    while (stack.length > 0 && indent <= prevIndent - (stack.length > 1 ? 2 : 0)) {
-      stack.pop();
-      prevIndent -= 2;
-    }
-    if (indent === 0) {
-      stack = [key];
-      prevIndent = 0;
-    } else if (!val || val === '{}' || val === '[]') {
-      /* 子分组 */
-      if (stack.length === 0) stack.push(key);
-      else { stack.push(key); }
-      prevIndent = indent;
-    } else {
-      /* 叶子节点 */
-      const path = [...stack, key].join('.');
-      paths.push(path);
-    }
-  }
-  return paths;
+  return e ? parseInitVarPaths(e.content) : [];
 }
 
 /* ========================================================================
@@ -311,19 +292,11 @@ async function onStep1Next() {
   }
 
   /* 有已有MVU变量 → 直接加载 */
-  const existingPaths = collectExistingPaths();
-  if (existingPaths.length > 0) {
-    varList.value = existingPaths.map(p => {
-      const dotIdx = p.indexOf('.');
-      return {
-        group: dotIdx > 0 ? p.substring(0, dotIdx) : p,
-        field: dotIdx > 0 ? p.substring(dotIdx + 1) : '',
-        type: 'string',
-        default: ''
-      };
-    });
+  const existingVars = collectExistingVars();
+  if (existingVars.length > 0) {
+    varList.value = existingVars;
     step.value = 1;
-    appStore.toastSuccess(`已加载 ${existingPaths.length} 个已有变量路径`);
+    appStore.toastSuccess(`已加载 ${existingVars.length} 个已有变量路径`);
     return;
   }
 
@@ -388,13 +361,14 @@ async function onStep2GenHtml() {
         htmlForContinue = html.replace(/<\/body>\s*<\/html>\s*$/, '').replace(/<\/html>\s*$/, '');
       }
 
-      const tail = htmlForContinue.slice(-400);
       const contPrompt = missingTabs.length > 0
-        ? `以下HTML状态栏代码缺少了这些tab页面的内容div：${missingTabs.join('、')}。\n请只输出缺失的tab content div，从最后一个已有的div结束处继续。不要重复已有内容，不要输出<head>和<style>，直接输出缺失的div，最后以</div></body></html>结尾。\n\n已有代码末尾：\n...${tail}`
-        : `以下HTML代码被截断了，请从断点处继续输出剩余代码，不要重复已有内容。\n\n...${tail}`;
+        ? `你上面输出的状态栏代码缺少了这些tab页面的内容div：${missingTabs.join('、')}。\n请只输出缺失的tab content div，接在已有代码末尾。变量路径、元素id和样式沿用最初的要求和已有代码，不要重复已有内容，不要输出<head>和<style>，最后以</div></body></html>结尾。`
+        : '你上面输出的HTML代码被截断了，请从断点处继续输出剩余代码。变量路径、元素id和样式沿用最初的要求和已有代码，不要重复已有内容。';
 
       const contResult = await apiStore.chat([
         { role: 'system', content: '你是前端状态栏开发专家。继续输出缺失的HTML代码，不要说明文字。注释只用/* */。' },
+        { role: 'user', content: prompt },
+        { role: 'assistant', content: htmlForContinue },
         { role: 'user', content: contPrompt }
       ], { temperature: 0.3, maxTokens });
       const continued = extractHtml(contResult);
@@ -938,9 +912,12 @@ ${extraReq.value ? '【用户需求】\n' + extraReq.value + '\n\n' : ''}【设�
 function buildHtmlPrompt(cardContext, list) {
   /* 根据变量清单生成populateCharacterData里的读取代码示例 */
   const getLines = list.map(v => {
-    const path = 'stat_data.' + v.group + '.' + v.field;
+    const path = 'stat_data.' + v.group + (v.field ? '.' + v.field : '');
     const def = v.type === 'number' ? (v.default || '0') : "'" + (v.default || '--') + "'";
-    const id = (v.group + '-' + v.field).replace(/\./g, '-').toLowerCase();
+    const id = (v.field ? v.group + '-' + v.field : v.group).replace(/\./g, '-').toLowerCase();
+    if (v.type === 'record' || v.type === 'array') {
+      return '      /* ' + path + ' 是' + (v.type === 'record' ? '键值对象' : '数组') + '，遍历后把每一项渲染进 #' + id + ' */';
+    }
     return '      $("#' + id + '").text(_.get(all_variables, \'' + path + '\', ' + def + '));';
   }).join('\n');
 

@@ -149,9 +149,9 @@
               </div>
               <div class="form-group">
                 <label>额外关键词（用于世界书触发）</label>
-                <input class="input" :value="(ideNpc.keys || []).join(', ')"
-                  @input="ideNpc.keys = $event.target.value.split(',').map(k => k.trim()).filter(Boolean)"
-                  placeholder="如：王老师, 王静, 班主任（用逗号分隔）">
+                <CommaListInput class="input" :model-value="ideNpc.keys || []"
+                  @update:model-value="ideNpc.keys = $event"
+                  placeholder="如：王老师, 王静, 班主任（用逗号分隔）" />
               </div>
             </template>
 
@@ -366,6 +366,7 @@
 </template>
 
 <script setup>
+import CommaListInput from '../components/CommaListInput.vue';
 import { ref, reactive, watch, defineComponent, h } from 'vue';
 import { useCardStore } from '../stores/card.js';
 import { useApiStore } from '../stores/api.js';

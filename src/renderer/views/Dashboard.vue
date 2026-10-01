@@ -145,10 +145,18 @@ const appStore = useAppStore();
 const api = window.cardForgeAPI;
 const showAssetImport = ref(false);
 
-function handleNew() {
+function createNewCard() {
   cardStore.newCard();
   router.push('/editor');
   appStore.toastSuccess('已创建新角色卡');
+}
+
+function handleNew() {
+  if (cardStore.isDirty) {
+    appStore.confirmAction('当前角色卡有未保存的修改，新建会丢掉这些内容，确认新建？', createNewCard);
+  } else {
+    createNewCard();
+  }
 }
 
 async function handleImport() {
